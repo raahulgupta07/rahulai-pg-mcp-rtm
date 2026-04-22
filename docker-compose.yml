@@ -1,0 +1,11 @@
+services:
+  mcp-agent:
+    build: .
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+    env_file:
+      - .env
+    restart: unless-stopped
