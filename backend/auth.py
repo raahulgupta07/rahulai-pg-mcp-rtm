@@ -16,10 +16,16 @@ def _hash_password(password: str) -> str:
 def _load_users() -> list:
     if USERS_FILE.exists():
         return json.loads(USERS_FILE.read_text())
-    # Create default admin user
+    # Create default users from env vars (or fallback defaults)
+    admin_user = os.getenv("ADMIN_USERNAME", "admin")
+    admin_pass = os.getenv("ADMIN_PASSWORD", "admin123")
+    admin_name = os.getenv("ADMIN_DISPLAY_NAME", "Administrator")
+    user_user = os.getenv("USER_USERNAME", "user")
+    user_pass = os.getenv("USER_PASSWORD", "user123")
+    user_name = os.getenv("USER_DISPLAY_NAME", "Analyst")
     default_users = [
-        {"id": 1, "username": "admin", "password": _hash_password("admin123"), "role": "admin", "display_name": "Administrator"},
-        {"id": 2, "username": "user", "password": _hash_password("user123"), "role": "user", "display_name": "Analyst"},
+        {"id": 1, "username": admin_user, "password": _hash_password(admin_pass), "role": "admin", "display_name": admin_name},
+        {"id": 2, "username": user_user, "password": _hash_password(user_pass), "role": "user", "display_name": user_name},
     ]
     USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
     USERS_FILE.write_text(json.dumps(default_users, indent=2))
