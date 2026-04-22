@@ -1,0 +1,20 @@
+# Dependencies
+frontend/node_modules/
+frontend/.svelte-kit/
+frontend/build/
+__pycache__/
+*.pyc
+
+# Data (persist locally, don't push)
+data/rtm.db
+data/users.json
+data/settings.json
+outputs/*.xlsx
+
+# Environment
+.env
+.jwt_secret
+
+# OS
+.DS_Store
+*.swp

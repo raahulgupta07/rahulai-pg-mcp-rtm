@@ -1,0 +1,31 @@
+ItemCode,ItemName,ShortcutName,Brand,Category,Size
+ITM001,Pantene Shampoo 170ml,Pan Shm 170,Pantene,Non Food,170ml
+ITM002,Pantene Conditioner 170ml,Pan Con 170,Pantene,Non Food,170ml
+ITM003,Pantene Shampoo 340ml,Pan Shm 340,Pantene,Non Food,340ml
+ITM004,Tide Powder 1kg,Tide 1kg,Tide,Non Food,1kg
+ITM005,Tide Powder 2.5kg,Tide 2.5kg,Tide,Non Food,2.5kg
+ITM006,Tide Liquid 900ml,Tide Liq 900,Tide,Non Food,900ml
+ITM007,Pampers Baby Dry S 46pcs,Pam S46,Pampers,Non Food,S-46pcs
+ITM008,Pampers Baby Dry M 40pcs,Pam M40,Pampers,Non Food,M-40pcs
+ITM009,Pampers Baby Dry L 36pcs,Pam L36,Pampers,Non Food,L-36pcs
+ITM010,Pampers Premium Care NB 30pcs,Pam PC NB30,Pampers,Non Food,NB-30pcs
+ITM011,Gillette Guard Cartridge 4s,Gil Guard 4,Gillette,Non Food,4pcs
+ITM012,Gillette Blue 3 Razor 3s,Gil B3 3s,Gillette,Non Food,3pcs
+ITM013,Gillette Shaving Foam 250ml,Gil Foam 250,Gillette,Non Food,250ml
+ITM014,Oral-B Toothbrush Classic,OB Classic,Oral-B,Non Food,1pc
+ITM015,Oral-B Toothpaste 100g,OB TP 100,Oral-B,Non Food,100g
+ITM016,Oral-B Mouthwash 250ml,OB MW 250,Oral-B,Non Food,250ml
+ITM017,Downy Fabric Softener 900ml,Dwn 900,Downy,Non Food,900ml
+ITM018,Downy Fabric Softener 1.8L,Dwn 1.8L,Downy,Non Food,1.8L
+ITM019,Downy Concentrate 370ml,Dwn Con 370,Downy,Non Food,370ml
+ITM020,Safeguard Bar Soap 135g,SG Bar 135,Safeguard,Non Food,135g
+ITM021,Safeguard Liquid Soap 225ml,SG Liq 225,Safeguard,Non Food,225ml
+ITM022,Safeguard Hand Wash 200ml,SG HW 200,Safeguard,Non Food,200ml
+ITM023,H&S Shampoo Cool Menthol 170ml,HS Cool 170,Head & Shoulders,Non Food,170ml
+ITM024,H&S Shampoo Classic Clean 340ml,HS CC 340,Head & Shoulders,Non Food,340ml
+ITM025,H&S Shampoo Smooth Silky 170ml,HS SS 170,Head & Shoulders,Non Food,170ml
+ITM026,Enfagrow A+ Stage 3 400g,Enfa S3 400,Pantene,Nutrition,400g
+ITM027,Enfagrow A+ Stage 4 900g,Enfa S4 900,Pantene,Nutrition,900g
+ITM028,Pringles Original 110g,Prgl Orig,Tide,Food,110g
+ITM029,Pringles Sour Cream 110g,Prgl SC,Tide,Food,110g
+ITM030,Vicks VapoRub 50g,Vicks 50,Safeguard,Non Food,50g

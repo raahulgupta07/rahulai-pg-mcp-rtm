@@ -1,0 +1,81 @@
+CardCode,CardName,GroupName,Address,Township,Channel,Latitude,Longitude,Phone
+C0001,Aung Min Store,General Trade,"No.29, Pyay Road, Yankin",Yankin,General Trade,16.848978,96.113954,09310053353
+C0002,Golden Star Shop,General Trade,"No.190, Waizayantar Road, Thingangyun",Thingangyun,General Trade,16.918099,96.103178,09300604502
+C0003,Myat Noe Trading,General Trade,"No.60, Sule Pagoda Road, Dagon",Dagon,General Trade,16.912249,96.171602,09953041955
+C0004,Shwe Pyi Thar Mart,Wholesales,"No.108, Inya Road, North Okkalapa",North Okkalapa,Wholesales,16.855638,96.18693,09371432881
+C0005,Thiri Yadanar Store,Wholesales,"No.109, Bogyoke Aung San Road, Shwe Pyi Thar",Shwe Pyi Thar,Wholesales,16.843063,96.176349,09309747451
+C0006,Kyaw Zin Mini Mart,General Trade,"No.98, Kaba Aye Pagoda Road, Tamwe",Tamwe,General Trade,16.868791,96.126452,09246654552
+C0007,Nay Lin Trading,General Trade,"No.118, Sule Pagoda Road, Hlaing Tharyar",Hlaing Tharyar,General Trade,16.984459,96.10788,09514797776
+C0008,Htoo Aung Shop,Pharmacy,"No.161, Shwedagon Pagoda Road, East Dagon",East Dagon,Pharmacy,16.872327,96.119229,09274684276
+C0009,Mya Thi Da Store,Wholesales,"No.170, Inya Road, Insein",Insein,Wholesales,16.997044,96.185532,09308449460
+C0010,Win Win Grocery,Modern Trade,"No.72, Mahabandoola Road, Kyauktada",Kyauktada,Modern Trade,16.872966,96.137018,09424956459
+C0011,Aye Aye Mon Store,Pharmacy,"No.69, Thanlwin Road, Thingangyun",Thingangyun,Pharmacy,16.929607,96.160913,09383758720
+C0012,Zaw Zaw Trading,General Trade,"No.187, Inya Road, North Okkalapa",North Okkalapa,General Trade,16.875891,96.198952,09887194506
+C0013,Hla Hla Win Shop,Modern Trade,"No.143, Inya Road, Shwe Pyi Thar",Shwe Pyi Thar,Modern Trade,16.96857,96.1776,09445938494
+C0014,Kyaw Soe Mart,General Trade,"No.9, Lower Pazundaung Road, East Dagon",East Dagon,General Trade,16.853548,96.121098,09809004943
+C0015,Su Su Win Store,General Trade,"No.184, Bogyoke Aung San Road, Seikkyi Kanaungto",Seikkyi Kanaungto,General Trade,16.899846,96.188468,09890256940
+C0016,Tun Tun Oo Trading,General Trade,"No.37, Strand Road, Ahlone",Ahlone,General Trade,16.948998,96.153898,09827694430
+C0017,Min Min Grocery,General Trade,"No.150, Anawrahta Road, Pabedan",Pabedan,General Trade,16.999465,96.113833,09729908599
+C0018,Phyo Wai Store,Pharmacy,"No.194, Pyay Road, Tamwe",Tamwe,Pharmacy,16.830568,96.115998,09930661141
+C0019,Saw Myat Shop,General Trade,"No.153, Kaba Aye Pagoda Road, Pabedan",Pabedan,General Trade,16.919178,96.146805,09469953851
+C0020,Thu Zar Trading,Wholesales,"No.3, Insein Road, North Okkalapa",North Okkalapa,Wholesales,16.936342,96.153697,09486501362
+C0021,Khin Maung Store,General Trade,"No.165, Bogyoke Aung San Road, North Dagon",North Dagon,General Trade,16.886953,96.145372,09975340444
+C0022,Aung Kyaw Mart,Pharmacy,"No.185, Strand Road, Seikkyi Kanaungto",Seikkyi Kanaungto,Pharmacy,16.952392,96.150768,09314257751
+C0023,Yin Yin Shop,Wholesales,"No.161, Strand Road, Dala",Dala,Wholesales,16.901533,96.119891,09601486939
+C0024,Thiha Trading,Pharmacy,"No.42, Sule Pagoda Road, North Dagon",North Dagon,Pharmacy,16.984487,96.191849,09843111853
+C0025,May Thu Store,General Trade,"No.126, Pyay Road, Lanmadaw",Lanmadaw,General Trade,16.872596,96.198532,09530190783
+C0026,Zay Ya Grocery,Pharmacy,"No.15, Inya Road, Mingalar Taung Nyunt",Mingalar Taung Nyunt,Pharmacy,16.98939,96.108565,09721828280
+C0027,Sein Lwin Store,General Trade,"No.18, Lower Pazundaung Road, East Dagon",East Dagon,General Trade,16.825152,96.165975,09790347116
+C0028,Naing Lin Shop,Pharmacy,"No.68, Sule Pagoda Road, Kamayut",Kamayut,Pharmacy,16.884628,96.12118,09779064766
+C0029,Htet Aung Trading,General Trade,"No.187, Thanlwin Road, North Dagon",North Dagon,General Trade,16.862343,96.199515,09897801251
+C0030,Moe Moe Store,General Trade,"No.113, Waizayantar Road, Latha",Latha,General Trade,16.824201,96.12247,09563016614
+C0031,Wai Yan Mart,General Trade,"No.151, Sule Pagoda Road, Hlaing",Hlaing,General Trade,16.844043,96.107099,09877641645
+C0032,Cherry Blossom Shop,Pharmacy,"No.59, Kaba Aye Pagoda Road, Insein",Insein,Pharmacy,16.971927,96.107086,09455555531
+C0033,San San Aye Store,General Trade,"No.172, Mahabandoola Road, Botahtaung",Botahtaung,General Trade,16.826462,96.193551,09813152854
+C0034,Ko Ko Gyi Trading,Wholesales,"No.122, Inya Road, Thaketa",Thaketa,Wholesales,16.961499,96.119041,09304078666
+C0035,Nilar Win Grocery,General Trade,"No.111, Bogyoke Aung San Road, Thingangyun",Thingangyun,General Trade,16.893405,96.172908,09923019672
+C0036,Phone Myint Store,General Trade,"No.166, Kaba Aye Pagoda Road, Yankin",Yankin,General Trade,16.945643,96.180059,09317326729
+C0037,Aye Chan Shop,General Trade,"No.50, Inya Road, Mingalar Taung Nyunt",Mingalar Taung Nyunt,General Trade,16.828036,96.118349,09696743109
+C0038,Soe Min Trading,Wholesales,"No.20, Mahabandoola Road, Mingalar Taung Nyunt",Mingalar Taung Nyunt,Wholesales,16.971193,96.109791,09900235246
+C0039,Nwe Nwe Store,Pharmacy,"No.4, Kaba Aye Pagoda Road, North Okkalapa",North Okkalapa,Pharmacy,16.969739,96.116631,09721453189
+C0040,Kyaw Kyaw Mart,General Trade,"No.55, Upper Pazundaung Road, Mayangone",Mayangone,General Trade,16.811727,96.137897,09619212169
+C0041,Thida Oo Shop,General Trade,"No.117, Strand Road, Botahtaung",Botahtaung,General Trade,16.991464,96.199542,09796751693
+C0042,Lin Lin Store,General Trade,"No.184, Mahabandoola Road, Thingangyun",Thingangyun,General Trade,16.859342,96.196871,09821890096
+C0043,Aung Zaw Trading,Wholesales,"No.139, Pyay Road, Hlaing Tharyar",Hlaing Tharyar,Wholesales,16.811433,96.158418,09739931481
+C0044,Mya Mya Grocery,General Trade,"No.136, University Avenue, Twantay",Twantay,General Trade,16.901566,96.185134,09273574218
+C0045,Toe Toe Shop,Pharmacy,"No.18, Insein Road, Dawbon",Dawbon,Pharmacy,16.880755,96.19416,09811684318
+C0046,Hlaing Myint Store,General Trade,"No.149, Shwedagon Pagoda Road, Mingalar Taung Nyunt",Mingalar Taung Nyunt,General Trade,16.816397,96.165737,09806907788
+C0047,Shwe Taung Mart,General Trade,"No.81, Waizayantar Road, South Okkalapa",South Okkalapa,General Trade,16.933945,96.131418,09485201412
+C0048,Yadanar Trading,Modern Trade,"No.34, Insein Road, Kyauktada",Kyauktada,Modern Trade,16.891445,96.192902,09277892576
+C0049,City Star Grocery,Pharmacy,"No.118, Shwedagon Pagoda Road, Hlaing",Hlaing,Pharmacy,16.999219,96.107326,09428872698
+C0050,Golden Land Shop,Pharmacy,"No.68, University Avenue, South Okkalapa",South Okkalapa,Pharmacy,16.976173,96.187927,09596776692
+C0051,Diamond Store,Wholesales,"No.41, Mahabandoola Road, Pazundaung",Pazundaung,Wholesales,16.940708,96.161168,09902201721
+C0052,Royal Mart,Wholesales,"No.3, Insein Road, South Okkalapa",South Okkalapa,Wholesales,16.859876,96.166339,09344193987
+C0053,Ocean Blue Grocery,General Trade,"No.30, Waizayantar Road, Botahtaung",Botahtaung,General Trade,16.910645,96.127235,09849431082
+C0054,Green Valley Shop,General Trade,"No.184, Bogyoke Aung San Road, Dagon",Dagon,General Trade,16.926848,96.126398,09724557080
+C0055,Sun Rise Store,Modern Trade,"No.14, Kaba Aye Pagoda Road, Botahtaung",Botahtaung,Modern Trade,16.96587,96.104409,09558153605
+C0056,Moon Light Trading,Pharmacy,"No.34, Insein Road, North Dagon",North Dagon,Pharmacy,16.832316,96.144184,09957704655
+C0057,Silver Star Mart,General Trade,"No.144, Pyay Road, Pabedan",Pabedan,General Trade,16.98901,96.169102,09360045822
+C0058,Happy Shop,General Trade,"No.10, Upper Pazundaung Road, North Okkalapa",North Okkalapa,General Trade,16.910505,96.142979,09244913399
+C0059,Lucky Star Store,Pharmacy,"No.94, Waizayantar Road, Pazundaung",Pazundaung,Pharmacy,16.994439,96.103989,09584194737
+C0060,Best Choice Grocery,Modern Trade,"No.175, Inya Road, Dagon",Dagon,Modern Trade,16.870736,96.155988,09636344399
+C0061,Top One Mart,Pharmacy,"No.192, University Avenue, Dawbon",Dawbon,Pharmacy,16.847347,96.11625,09390108532
+C0062,Mega Store,General Trade,"No.106, Pyay Road, Seikkyi Kanaungto",Seikkyi Kanaungto,General Trade,16.984897,96.178239,09642073642
+C0063,Super Save Shop,Wholesales,"No.172, Upper Pazundaung Road, South Dagon",South Dagon,Wholesales,16.849633,96.11592,09952991721
+C0064,Value Plus Trading,General Trade,"No.98, Upper Pazundaung Road, Bahan",Bahan,General Trade,16.894138,96.119957,09694246837
+C0065,Fresh Mart,Wholesales,"No.79, Upper Pazundaung Road, Latha",Latha,Wholesales,16.845519,96.102366,09407371533
+C0066,Daily Needs Store,Pharmacy,"No.85, Strand Road, Kyauktada",Kyauktada,Pharmacy,16.993378,96.127912,09888785773
+C0067,Family Grocery,Pharmacy,"No.103, Insein Road, South Okkalapa",South Okkalapa,Pharmacy,16.907243,96.193924,09323847257
+C0068,Corner Shop Mart,Modern Trade,"No.67, University Avenue, Seikkyi Kanaungto",Seikkyi Kanaungto,Modern Trade,16.99671,96.103826,09840563507
+C0069,Quick Stop Store,Wholesales,"No.89, Thanlwin Road, Pabedan",Pabedan,Wholesales,16.887279,96.198424,09324173718
+C0070,Home Plus Trading,General Trade,"No.148, Inya Road, Kyauktada",Kyauktada,General Trade,16.941757,96.100169,09778158427
+C0071,Smart Buy Grocery,Wholesales,"No.185, Thanlwin Road, Thingangyun",Thingangyun,Wholesales,16.839407,96.14313,09913219781
+C0072,Good Price Shop,General Trade,"No.85, Shwedagon Pagoda Road, Twantay",Twantay,General Trade,16.969603,96.171975,09522468580
+C0073,ABC Mart,General Trade,"No.80, Insein Road, South Okkalapa",South Okkalapa,General Trade,16.88048,96.129566,09336674237
+C0074,New Day Store,Pharmacy,"No.108, Insein Road, Dagon",Dagon,Pharmacy,16.935464,96.190281,09860904107
+C0075,Fair Deal Trading,General Trade,"No.78, Anawrahta Road, Thaketa",Thaketa,General Trade,16.800081,96.128691,09661588882
+C0076,Trust Grocery,Modern Trade,"No.149, Shwedagon Pagoda Road, South Dagon",South Dagon,Modern Trade,16.892998,96.144216,09429460134
+C0077,Pioneer Shop,Pharmacy,"No.122, Lower Pazundaung Road, South Okkalapa",South Okkalapa,Pharmacy,16.959205,96.116969,09291048514
+C0078,Unity Store,Modern Trade,"No.132, Insein Road, Pazundaung",Pazundaung,Modern Trade,16.867038,96.181842,09452188235
+C0079,Modern Mart,Wholesales,"No.80, Inya Road, Thingangyun",Thingangyun,Wholesales,16.829471,96.104621,09710173760
+C0080,Central Trading,General Trade,"No.197, Kaba Aye Pagoda Road, Dawbon",Dawbon,General Trade,16.977227,96.157567,09971318048
