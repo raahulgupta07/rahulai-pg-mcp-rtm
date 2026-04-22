@@ -8,11 +8,12 @@
     { label: "HISTORY", href: "/history" },
     { label: "RTM DATA", href: "/rtm" },
     { label: "DOCS", href: "/docs" },
-    { label: "SETTINGS", href: "/users" },
   ];
 
   let navItems = $derived(
-    baseNavItems
+    auth.isAdmin
+      ? [...baseNavItems, { label: "SETTINGS", href: "/users" }]
+      : baseNavItems
   );
 
   function isActive(itemHref: string): boolean {
