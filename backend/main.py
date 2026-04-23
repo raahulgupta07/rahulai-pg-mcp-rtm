@@ -87,6 +87,8 @@ async def login(body: dict):
     if not user:
         raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
     token = create_token(user)
+    db = get_database()
+    db.log_action(username, "LOGIN", "Logged in successfully")
     return {"access_token": token, "token_type": "bearer", "user": user}
 
 @app.get("/api/auth/me")
@@ -101,6 +103,8 @@ async def get_users(user: dict = Depends(require_admin)):
 async def add_user(body: dict, user: dict = Depends(require_admin)):
     try:
         new_user = create_user(body["username"], body["password"], body.get("role", "user"), body.get("display_name", ""))
+        db = get_database()
+        db.log_action(user["username"], "CREATE_USER", f"Created user: {body['username']}")
         return new_user
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -108,6 +112,8 @@ async def add_user(body: dict, user: dict = Depends(require_admin)):
 @app.delete("/api/users/{user_id}")
 async def remove_user(user_id: int, user: dict = Depends(require_admin)):
     delete_user(user_id)
+    db = get_database()
+    db.log_action(user["username"], "DELETE_USER", f"Deleted user ID: {user_id}")
     return {"ok": True}
 
 
@@ -128,18 +134,45 @@ async def classify(
     log: list[str] = []
 
     # 1. Read the uploaded CSV with encoding fallbacks
+    log.append("$ mcp-agent upload --parse-csv")
     raw_bytes = await file.read()
     sales_df = None
     for encoding in ("utf-8", "latin-1", "cp1252"):
         try:
             sales_df = pd.read_csv(io.BytesIO(raw_bytes), encoding=encoding, low_memory=False)
-            log.append(f"CSV parsed with {encoding} encoding: {len(sales_df)} rows")
+            log.append(f"[OK] CSV parsed ({encoding}): {len(sales_df):,} rows, {len(sales_df.columns)} columns")
             break
         except (UnicodeDecodeError, pd.errors.ParserError):
             continue
 
     if sales_df is None:
         raise HTTPException(status_code=400, detail="Could not parse CSV with any supported encoding (utf-8, latin-1, cp1252)")
+
+    # Validate required columns
+    log.append("$ mcp-agent validate --check-schema")
+    required_cols = ["Cus.Code", "Cus.Name", "TotalAmount", "TotalPcs", "BranchName", "Item Class", "NumInBuy"]
+    missing = [c for c in required_cols if c not in sales_df.columns]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing required columns: {', '.join(missing)}")
+
+    for col in required_cols:
+        log.append(f"[SCAN] Required: {col} {'.' * (25 - len(col))} FOUND")
+
+    # Validate data is not empty
+    if len(sales_df) == 0:
+        raise HTTPException(status_code=400, detail="CSV file is empty — no data rows found")
+
+    # Validate key columns have data
+    null_checks = {
+        "Cus.Code": sales_df["Cus.Code"].isnull().sum(),
+        "TotalAmount": sales_df["TotalAmount"].isnull().sum(),
+        "BranchName": sales_df["BranchName"].isnull().sum(),
+    }
+    warnings = [f"{col}: {count} null values" for col, count in null_checks.items() if count > 0]
+    if warnings:
+        for w in warnings:
+            log.append(f"[WARN] {w}")
+    log.append("[OK] Schema validation passed")
 
     # 2. Start a job
     job_manager = get_job_manager()
@@ -150,22 +183,37 @@ async def classify(
         threshold_a=threshold_a,
         threshold_b=threshold_b,
     )
-    log.append(f"Job started: {job_id}")
+    log.append(f"[INFO] Job ID: {job_id[:8]}...")
 
     try:
         # 3. Run classification pipeline
+        log.append("$ mcp-agent classify --method pareto --partition branch")
         classifier = RTMClassifier(sales_df)
         results_df = classifier.process()
-        log.append(f"Classification complete: {len(results_df)} outlets")
+
+        n_branches = int(results_df["BranchName"].nunique()) if "BranchName" in results_df.columns else 0
+        log.append(f"[OK] {len(results_df):,} outlets classified across {n_branches} branches")
+        if "Classification" in results_df.columns:
+            for cls_name, cnt in results_df["Classification"].value_counts().items():
+                log.append(f"[RESULT] {cls_name}: {cnt:,}")
+        if classifier.min_date and classifier.max_date:
+            log.append(f"[INFO] Date range: {classifier.min_date.date()} to {classifier.max_date.date()}")
+        ws_col_count = int(results_df["Is_Wholesaler"].sum()) if "Is_Wholesaler" in results_df.columns else 0
+        log.append(f"[INFO] Wholesalers detected: {ws_col_count}")
 
         # 4. AI enrichment (per-outlet columns)
+        log.append("$ mcp-agent enrich --ai-rules")
         ai_service = get_ai_service()
         results_df = ai_service.enrich_outlets(results_df)
-        log.append("AI enrichment complete")
+        if "AI_Growth_Signal" in results_df.columns:
+            for signal, cnt in results_df["AI_Growth_Signal"].value_counts().items():
+                log.append(f"[AI] {signal}: {cnt:,} outlets")
+        log.append("[OK] AI enrichment complete")
 
         # 5. AI insights (executive summary, recommendations)
+        log.append("$ mcp-agent insights --model gemini")
         insights = ai_service.generate_all_insights(results_df)
-        log.append("AI insights generated")
+        log.append("[OK] AI insights generated")
 
         # 5b. Workload data
         workload = []
@@ -181,7 +229,11 @@ async def classify(
         date_to = str(classifier.max_date.date()) if classifier.max_date else None
         wl_df = classifier.route_workload if hasattr(classifier, 'route_workload') else None
         job_manager.complete_job(results_df, date_from=date_from, date_to=date_to, workload_df=wl_df)
-        log.append("Job saved to database")
+        log.append("[OK] Job saved to database")
+
+        # Audit log
+        db = get_database()
+        db.log_action(user["username"], "CLASSIFY", f"Job {job_id}: {len(results_df)} outlets, {n_branches} branches")
 
         # 8. Compute summary counts
         class_counts = results_df["Classification"].value_counts().to_dict()
@@ -413,6 +465,9 @@ async def export_job(job_id: str, user: dict = Depends(require_auth)):
 
         excel_bytes = job_manager.create_excel_report(results_df)
 
+    db = get_database()
+    db.log_action(user["username"], "EXPORT", f"Downloaded Excel for {job_id}")
+
     return StreamingResponse(
         io.BytesIO(excel_bytes),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -427,10 +482,18 @@ async def export_job(job_id: str, user: dict = Depends(require_auth)):
 async def health():
     """Health check endpoint."""
     ai_service = get_ai_service()
+    db = get_database()
+    jobs = db.get_all_jobs(limit=1)
+    total_jobs = len(db.get_all_jobs(limit=1000))
+    last_run = jobs[0]["created_at"] if jobs else None
+    latest_outlets = jobs[0].get("total_outlets", 0) if jobs else 0
     return JSONResponse(content={
         "status": "ok",
         "pipeline": "idle",
-        "model": ai_service.model if ai_service.is_configured() else "haiku (not configured)",
+        "model": ai_service.model if ai_service.is_configured() else "not configured",
+        "jobs": total_jobs,
+        "last_run": str(last_run) if last_run else None,
+        "outlets": latest_outlets,
     })
 
 
@@ -477,6 +540,10 @@ async def update_settings(body: dict, user: dict = Depends(require_admin)):
         current["threshold_b"] = int(body["threshold_b"])
 
     settings_file.write_text(json.dumps(current, indent=2))
+
+    db = get_database()
+    db.log_action(user["username"], "SETTINGS", f"Updated thresholds: A={body.get('threshold_a')}, B={body.get('threshold_b')}")
+
     return {"ok": True, "threshold_a": current.get("threshold_a", 80), "threshold_b": current.get("threshold_b", 95)}
 
 
@@ -513,6 +580,217 @@ async def get_rtm_data(
         "job_id": job_id,
         "jobs": job_list,
     })
+
+
+# ──────────────────────────────────────────────
+# GET /api/compare
+# ──────────────────────────────────────────────
+@app.get("/api/compare")
+async def compare_jobs(
+    job1: str = Query(...),
+    job2: str = Query(...),
+    user: dict = Depends(require_auth),
+):
+    """Compare two classification jobs side by side."""
+    db = get_database()
+
+    r1 = db.get_job_results(job1)
+    r2 = db.get_job_results(job2)
+    j1 = db.get_job(job1)
+    j2 = db.get_job(job2)
+
+    if r1.empty or r2.empty:
+        raise HTTPException(status_code=404, detail="One or both jobs not found")
+
+    # Compute comparison
+    # Use Cus_Code as the key
+    code_col = 'Cus_Code' if 'Cus_Code' in r1.columns else 'Cus.Code'
+
+    set1 = set(r1[code_col].astype(str))
+    set2 = set(r2[code_col].astype(str))
+
+    new_outlets = set2 - set1
+    lost_outlets = set1 - set2
+    common = set1 & set2
+
+    # Track classification changes
+    movements = []
+    cls1_map = dict(zip(r1[code_col].astype(str), r1['Classification']))
+    cls2_map = dict(zip(r2[code_col].astype(str), r2['Classification']))
+    name_map = dict(zip(r2[code_col].astype(str), r2.get('Cus_Name', r2.get('Cus.Name', ''))))
+    branch_map = dict(zip(r2[code_col].astype(str), r2.get('BranchName', '')))
+
+    upgraded = 0
+    downgraded = 0
+    unchanged = 0
+
+    class_rank = {'Class A': 1, 'Class A Local (F4)': 1, 'Class B': 2, 'Class C': 3}
+
+    for code in common:
+        old_cls = str(cls1_map.get(code, ''))
+        new_cls = str(cls2_map.get(code, ''))
+        if old_cls != new_cls:
+            old_rank = class_rank.get(old_cls, 99)
+            new_rank = class_rank.get(new_cls, 99)
+            status = 'UPGRADED' if new_rank < old_rank else 'DOWNGRADED'
+            if status == 'UPGRADED':
+                upgraded += 1
+            else:
+                downgraded += 1
+            movements.append({
+                'code': code,
+                'name': str(name_map.get(code, '')),
+                'branch': str(branch_map.get(code, '')),
+                'from': old_cls,
+                'to': new_cls,
+                'status': status,
+            })
+        else:
+            unchanged += 1
+
+    # Summary stats for each job
+    def job_stats(df):
+        total = len(df)
+        a = len(df[df['Classification'].str.startswith('Class A')])
+        b = len(df[df['Classification'] == 'Class B'])
+        c = len(df[df['Classification'] == 'Class C'])
+        rev = float(df['TotalSales_2Yr'].sum()) if 'TotalSales_2Yr' in df.columns else 0
+        return {'total': total, 'class_a': a, 'class_b': b, 'class_c': c, 'revenue': rev}
+
+    return JSONResponse(content={
+        'job1': {'id': job1, 'stats': job_stats(r1), 'created': str(j1.get('created_at', '')) if j1 else ''},
+        'job2': {'id': job2, 'stats': job_stats(r2), 'created': str(j2.get('created_at', '')) if j2 else ''},
+        'movements': movements[:500],
+        'summary': {
+            'upgraded': upgraded,
+            'downgraded': downgraded,
+            'unchanged': unchanged,
+            'new_outlets': len(new_outlets),
+            'lost_outlets': len(lost_outlets),
+            'total_changes': upgraded + downgraded + len(new_outlets) + len(lost_outlets),
+        },
+    })
+
+
+# ──────────────────────────────────────────────
+# GET /api/coverage
+# ──────────────────────────────────────────────
+@app.get("/api/coverage")
+async def get_coverage(
+    job_id: str = Query(None),
+    user: dict = Depends(require_auth),
+):
+    """Return outlet locations with classification for map visualization."""
+    import glob
+    db = get_database()
+
+    if not job_id:
+        jobs = db.get_all_jobs(limit=1)
+        if not jobs:
+            return JSONResponse(content={"outlets": [], "summary": {}})
+        job_id = jobs[0]["job_id"]
+
+    results_df = db.get_job_results(job_id)
+    if results_df.empty:
+        return JSONResponse(content={"outlets": [], "summary": {}})
+
+    geo_data = None
+    for pattern in [
+        "/Users/rahulgupta/Downloads/Coverage Planning (MCP) 2/Customer_Master.csv",
+        os.path.join(os.path.dirname(__file__), "..", "data", "sample_customers.csv"),
+    ]:
+        for f in glob.glob(pattern):
+            try:
+                for enc in ("utf-8", "latin-1", "cp1252"):
+                    try:
+                        geo_data = pd.read_csv(f, encoding=enc)
+                        break
+                    except Exception:
+                        continue
+                if geo_data is not None:
+                    break
+            except Exception:
+                continue
+
+    outlets = []
+    code_col = 'Cus_Code' if 'Cus_Code' in results_df.columns else 'Cus.Code'
+    name_col = 'Cus_Name' if 'Cus_Name' in results_df.columns else 'Cus.Name'
+
+    if geo_data is not None and 'Latitude' in geo_data.columns and 'Longitude' in geo_data.columns:
+        geo_key = 'CardCode_New' if 'CardCode_New' in geo_data.columns else 'CardCode' if 'CardCode' in geo_data.columns else 'Cus.Code'
+        geo_data[geo_key] = geo_data[geo_key].astype(str)
+        results_df[code_col] = results_df[code_col].astype(str)
+
+        merge_cols = [geo_key, 'Latitude', 'Longitude']
+        if 'Township' in geo_data.columns:
+            merge_cols.append('Township')
+
+        merged = results_df.merge(
+            geo_data[merge_cols].drop_duplicates(subset=geo_key),
+            left_on=code_col, right_on=geo_key, how='left'
+        )
+
+        for _, r in merged.iterrows():
+            lat = r.get('Latitude')
+            lng = r.get('Longitude')
+            if pd.notna(lat) and pd.notna(lng) and lat != 0 and lng != 0:
+                outlets.append({
+                    'code': str(r.get(code_col, '')),
+                    'name': str(r.get(name_col, '')),
+                    'branch': str(r.get('BranchName', '')),
+                    'classification': str(r.get('Classification', '')),
+                    'township': str(r.get('Township', '')) if 'Township' in r.index else '',
+                    'lat': float(lat),
+                    'lng': float(lng),
+                    'revenue': float(r.get('TotalSales_2Yr', 0) or 0),
+                })
+    else:
+        for _, r in results_df.head(1000).iterrows():
+            outlets.append({
+                'code': str(r.get(code_col, '')),
+                'name': str(r.get(name_col, '')),
+                'branch': str(r.get('BranchName', '')),
+                'classification': str(r.get('Classification', '')),
+                'township': '',
+                'lat': None,
+                'lng': None,
+                'revenue': float(r.get('TotalSales_2Yr', 0) or 0),
+            })
+
+    township_summary: dict = {}
+    for o in outlets:
+        t = o.get('township') or 'Unknown'
+        if t not in township_summary:
+            township_summary[t] = {'total': 0, 'a': 0, 'b': 0, 'c': 0}
+        township_summary[t]['total'] += 1
+        cls = o.get('classification', '')
+        if 'Class A' in cls:
+            township_summary[t]['a'] += 1
+        elif 'Class B' in cls:
+            township_summary[t]['b'] += 1
+        elif 'Class C' in cls:
+            township_summary[t]['c'] += 1
+
+    return JSONResponse(content={
+        'outlets': outlets[:5000],
+        'summary': township_summary,
+        'total_with_geo': len([o for o in outlets if o['lat'] is not None]),
+        'total_without_geo': len([o for o in outlets if o['lat'] is None]),
+    })
+
+
+# ──────────────────────────────────────────────
+# GET /api/audit
+# ──────────────────────────────────────────────
+@app.get("/api/audit")
+async def get_audit(user: dict = Depends(require_admin)):
+    db = get_database()
+    logs = db.get_audit_log(limit=200)
+    # Ensure serializable
+    clean = []
+    for entry in logs:
+        clean.append({k: str(v) if v is not None else None for k, v in entry.items()})
+    return JSONResponse(content=clean)
 
 
 # ============================================================

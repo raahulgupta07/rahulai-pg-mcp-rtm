@@ -82,8 +82,21 @@ export async function getRtmData(jobId?: string): Promise<any> {
   return fetchJSON(`/rtm-data${params}`);
 }
 
+export async function compareJobs(job1: string, job2: string): Promise<any> {
+  return fetchJSON(`/compare?job1=${job1}&job2=${job2}`);
+}
+
+export async function getCoverage(jobId?: string): Promise<any> {
+  const params = jobId ? `?job_id=${jobId}` : '';
+  return fetchJSON(`/coverage${params}`);
+}
+
 export async function getSettings(): Promise<any> {
   return fetchJSON('/settings');
+}
+
+export async function getAuditLog(): Promise<any[]> {
+  return fetchJSON('/audit');
 }
 
 export async function saveSettings(data: any): Promise<any> {

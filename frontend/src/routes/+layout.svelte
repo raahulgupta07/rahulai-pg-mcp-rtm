@@ -21,7 +21,7 @@
   <main style="padding-top:60px;padding-bottom:48px;padding-left:24px;padding-right:24px;max-width:1920px;margin:0 auto;background:var(--surface);min-height:100vh;">
     {@render children()}
   </main>
-  <Footer pipeline="IDLE" branches={0} jobs={0} />
+  <Footer />
 {:else}
   {@render children()}
 {/if}

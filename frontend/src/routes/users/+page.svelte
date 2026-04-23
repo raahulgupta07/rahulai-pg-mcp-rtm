@@ -1,6 +1,6 @@
 <script lang="ts">
   import { auth } from '$lib/stores/auth.svelte';
-  import { getUsers, createUser, deleteUser, getSettings, saveSettings } from '$lib/api';
+  import { getUsers, createUser, deleteUser, getSettings, saveSettings, getAuditLog } from '$lib/api';
   import ChapterHeading from '$lib/components/ChapterHeading.svelte';
 
   let users = $state([]);
@@ -93,6 +93,47 @@
       saving = false;
     }
   }
+  // Audit log state
+  let auditLog = $state<any[]>([]);
+  let auditLoading = $state(false);
+  let auditError = $state('');
+  let auditLoaded = $state(false);
+
+  function actionColor(action: string): string {
+    const colors: Record<string, string> = {
+      LOGIN: '#006f7c',
+      CLASSIFY: '#007518',
+      EXPORT: '#ff9d00',
+      CREATE_USER: '#007518',
+      DELETE_USER: '#be2d06',
+      SETTINGS: '#9d4867',
+    };
+    return colors[action] || '#383832';
+  }
+
+  function formatTimestamp(ts: string): string {
+    try {
+      const d = new Date(ts);
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) +
+        ' ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch {
+      return ts;
+    }
+  }
+
+  async function loadAuditLog() {
+    auditLoading = true;
+    auditError = '';
+    try {
+      auditLog = await getAuditLog();
+      auditLoaded = true;
+    } catch (e: any) {
+      auditError = e?.message || 'Failed to load audit log';
+    } finally {
+      auditLoading = false;
+    }
+  }
+
   let settingsTab = $state(0);
 </script>
 
@@ -104,9 +145,9 @@
 
 <!-- Tab buttons -->
 <div style="display:flex;gap:6px;margin-bottom:24px;">
-  {#each ['USERS', 'MODEL & CONFIG'] as label, i}
+  {#each ['USERS', 'MODEL & CONFIG', 'AUDIT LOG'] as label, i}
     <button
-      onclick={() => settingsTab = i}
+      onclick={() => { settingsTab = i; if (i === 2 && !auditLoaded) loadAuditLog(); }}
       style="
         padding:8px 20px;font-size:10px;font-weight:900;letter-spacing:0.08em;
         text-transform:uppercase;cursor:pointer;font-family:'Space Grotesk',sans-serif;
@@ -129,13 +170,17 @@
 {#if settingsTab === 0}
 
 {#if loading}
-  <div style="text-align:center;padding:48px;">
-    <div style="display:flex;justify-content:center;gap:6px;margin-bottom:16px;">
-      <span style="width:8px;height:8px;background:#007518;animation:bounce 0.6s ease-in-out infinite;"></span>
-      <span style="width:8px;height:8px;background:#ff9d00;animation:bounce 0.6s ease-in-out infinite;animation-delay:0.15s;"></span>
-      <span style="width:8px;height:8px;background:#be2d06;animation:bounce 0.6s ease-in-out infinite;animation-delay:0.3s;"></span>
-    </div>
-    <div style="font-size:11px;font-weight:700;color:#828179;letter-spacing:0.08em;">LOADING USERS...</div>
+  <div style="margin-bottom:24px;">
+    <!-- Skeleton title bar -->
+    <div style="height:44px;background:#383832;margin-bottom:0;"></div>
+    <!-- Skeleton rows -->
+    {#each [1,2,3,4,5] as _}
+      <div style="display:flex;gap:12px;padding:12px 16px;border-bottom:1px solid #ebe8dd;background:white;">
+        {#each [120,80,60,50,80,70] as w}
+          <div style="height:14px;width:{w}px;background:#ebe8dd;animation:skeleton-pulse 1.5s ease-in-out infinite;"></div>
+        {/each}
+      </div>
+    {/each}
   </div>
 {:else if error}
   <div style="padding:16px;background:#be2d06;color:white;font-size:12px;font-weight:700;border:2px solid #383832;margin-bottom:16px;">
@@ -450,6 +495,74 @@
           <div style="font-size:13px;color:#383832;">Powered by <span style="font-weight:700;font-family:monospace;">{settings.model}</span> via OpenRouter</div>
         </div>
       </div>
+    </div>
+  {/if}
+
+<!-- ======== TAB 2: AUDIT LOG ======== -->
+{:else if settingsTab === 2}
+
+  {#if auditLoading}
+    <div style="text-align:center;padding:48px;">
+      <div style="display:flex;justify-content:center;gap:6px;margin-bottom:16px;">
+        <span style="width:8px;height:8px;background:#007518;animation:bounce 0.6s ease-in-out infinite;"></span>
+        <span style="width:8px;height:8px;background:#ff9d00;animation:bounce 0.6s ease-in-out infinite;animation-delay:0.15s;"></span>
+        <span style="width:8px;height:8px;background:#be2d06;animation:bounce 0.6s ease-in-out infinite;animation-delay:0.3s;"></span>
+      </div>
+      <div style="font-size:11px;font-weight:700;color:#828179;letter-spacing:0.08em;">LOADING AUDIT LOG...</div>
+    </div>
+  {:else if auditError}
+    <div style="padding:16px;background:#be2d06;color:white;font-size:12px;font-weight:700;border:2px solid #383832;margin-bottom:16px;">
+      ERROR: {auditError}
+    </div>
+  {:else}
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <ChapterHeading title="Audit Log" subtitle="{auditLog.length} entries" />
+      <button
+        onclick={loadAuditLog}
+        style="padding:6px 16px;font-size:10px;font-weight:900;letter-spacing:0.08em;background:#feffd6;color:#383832;border:2px solid #383832;box-shadow:3px 3px 0 #383832;cursor:pointer;font-family:'Space Grotesk',sans-serif;border-radius:0;"
+      >
+        REFRESH
+      </button>
+    </div>
+
+    <div style="border:3px solid #383832;box-shadow:4px 4px 0 #383832;overflow:hidden;margin-bottom:24px;">
+      <div style="padding:8px 12px;background:#383832;color:#feffd6;font-size:10px;font-weight:900;letter-spacing:0.1em;display:flex;justify-content:space-between;">
+        <span>AUDIT LOG</span>
+        <span style="opacity:0.7;">{auditLog.length} ENTRIES</span>
+      </div>
+      {#if auditLog.length === 0}
+        <div style="text-align:center;padding:32px;">
+          <div style="font-size:12px;font-weight:900;color:#383832;">NO AUDIT ENTRIES</div>
+        </div>
+      {:else}
+        <div style="max-height:600px;overflow-y:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead>
+              <tr>
+                <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:left;font-size:10px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#383832;border-bottom:2px solid #383832;">TIME</th>
+                <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:left;font-size:10px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#383832;border-bottom:2px solid #383832;">USER</th>
+                <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:left;font-size:10px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#383832;border-bottom:2px solid #383832;">ACTION</th>
+                <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:left;font-size:10px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#383832;border-bottom:2px solid #383832;">DETAILS</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each auditLog as entry, i}
+                <tr style="background:{i % 2 === 0 ? 'white' : '#fcf9ef'};border-bottom:1px solid #ebe8dd;">
+                  <td style="padding:8px 12px;font-size:11px;font-weight:600;color:#383832;font-family:monospace;white-space:nowrap;">{formatTimestamp(entry.timestamp)}</td>
+                  <td style="padding:8px 12px;font-size:11px;font-weight:700;color:#383832;">{entry.username || '--'}</td>
+                  <td style="padding:8px 12px;">
+                    <span style="
+                      display:inline-block;padding:3px 8px;font-size:10px;font-weight:900;letter-spacing:0.06em;
+                      background:{actionColor(entry.action)};color:#feffd6;text-transform:uppercase;
+                    ">{entry.action}</span>
+                  </td>
+                  <td style="padding:8px 12px;font-size:11px;font-weight:600;color:#383832;">{entry.details || '--'}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
     </div>
   {/if}
 {/if}

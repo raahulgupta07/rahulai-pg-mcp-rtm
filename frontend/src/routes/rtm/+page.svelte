@@ -12,6 +12,23 @@
   let selectedClass = $state('All');
   let searchQuery = $state('');
 
+  // Persist branch filter to localStorage
+  $effect(() => {
+    if (selectedBranch && typeof window !== 'undefined') {
+      localStorage.setItem('rtm_branch_filter', selectedBranch);
+    }
+  });
+
+  // Restore branch filter from localStorage after data is loaded
+  $effect(() => {
+    if (typeof window !== 'undefined' && !loading && branches.length > 0) {
+      const saved = localStorage.getItem('rtm_branch_filter');
+      if (saved && saved !== 'All' && saved !== 'All Branches' && branches.includes(saved)) {
+        selectedBranch = saved;
+      }
+    }
+  });
+
   // All available options
   let jobs = $state<any[]>([]);
   let allResults = $state<any[]>([]);
@@ -157,14 +174,17 @@
 </div>
 
 {#if loading}
-  <!-- loading dots -->
-  <div style="text-align:center;padding:48px;">
-    <div style="display:flex;justify-content:center;gap:6px;margin-bottom:16px;">
-      <span style="width:8px;height:8px;background:#007518;animation:bounce 0.6s ease-in-out infinite;"></span>
-      <span style="width:8px;height:8px;background:#ff9d00;animation:bounce 0.6s ease-in-out infinite;animation-delay:0.15s;"></span>
-      <span style="width:8px;height:8px;background:#be2d06;animation:bounce 0.6s ease-in-out infinite;animation-delay:0.3s;"></span>
-    </div>
-    <div style="font-size:11px;font-weight:700;color:#828179;">LOADING DATA...</div>
+  <div style="margin-bottom:24px;">
+    <!-- Skeleton title bar -->
+    <div style="height:44px;background:#383832;margin-bottom:0;"></div>
+    <!-- Skeleton rows -->
+    {#each [1,2,3,4,5] as _}
+      <div style="display:flex;gap:12px;padding:12px 16px;border-bottom:1px solid #ebe8dd;background:white;">
+        {#each [120,80,60,50,80,70] as w}
+          <div style="height:14px;width:{w}px;background:#ebe8dd;animation:skeleton-pulse 1.5s ease-in-out infinite;"></div>
+        {/each}
+      </div>
+    {/each}
   </div>
 
 {:else if error}

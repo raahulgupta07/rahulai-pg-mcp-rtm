@@ -15,6 +15,24 @@
   let error = $state('');
   let logEntries = $state([]);
   let selectedBranch = $state('All Branches');
+
+  // Persist branch filter to localStorage
+  $effect(() => {
+    if (selectedBranch && typeof window !== 'undefined') {
+      localStorage.setItem('rtm_branch_filter', selectedBranch);
+    }
+  });
+
+  // Restore branch filter from localStorage after data is loaded
+  $effect(() => {
+    if (typeof window !== 'undefined' && state === 'results' && branches.length > 0) {
+      const saved = localStorage.getItem('rtm_branch_filter');
+      if (saved && saved !== 'All Branches' && branches.includes(saved)) {
+        selectedBranch = saved;
+      }
+    }
+  });
+
   let activeTab = $state(0);
   let searchQuery = $state('');
   let classFilter = $state('All');
@@ -313,8 +331,23 @@
       clearInterval(stepInterval);
       clearInterval(typeInterval);
       logEntries = data.log || [];
-      // Show completion in terminal
-      terminalLines = [...terminalLines, '', '═══════════════════════════════════════════', '[MCP AGENT] ✓ ALL STEPS COMPLETE', '═══════════════════════════════════════════'];
+
+      // Replace simulated terminal with actual pipeline log from backend
+      if (data.log?.length) {
+        terminalLines = [
+          '[MCP AGENT] Pipeline initiated...',
+          `[MCP AGENT] File: ${file.name} (${(file.size/1024).toFixed(0)} KB)`,
+          '',
+          ...data.log.map((l: string) => `  ${l}`),
+          '',
+          '═══════════════════════════════════════════',
+          `[MCP AGENT] ✓ ALL STEPS COMPLETE — ${data.total_outlets ?? '?'} outlets classified`,
+          '═══════════════════════════════════════════',
+        ];
+      } else {
+        terminalLines = [...terminalLines, '', '═══════════════════════════════════════════', '[MCP AGENT] ✓ ALL STEPS COMPLETE', '═══════════════════════════════════════════'];
+      }
+      scrollTerminal();
       currentStep = 10;
       await new Promise(r => setTimeout(r, 1500));
       state = 'results';

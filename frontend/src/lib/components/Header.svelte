@@ -7,6 +7,7 @@
     { label: "CLASSIFY", href: "/" },
     { label: "HISTORY", href: "/history" },
     { label: "RTM DATA", href: "/rtm" },
+    { label: "COMPARE", href: "/compare" },
     { label: "DOCS", href: "/docs" },
   ];
 

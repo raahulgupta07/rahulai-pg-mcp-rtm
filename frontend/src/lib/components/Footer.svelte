@@ -1,5 +1,36 @@
 <script lang="ts">
-  let { pipeline = "IDLE", branches = 0, jobs = 0 } = $props();
+  let health = $state({ status: 'ok', pipeline: 'idle', model: '', jobs: 0, last_run: null as string | null, outlets: 0 });
+
+  $effect(() => {
+    fetch('/api/health').then(r => r.json()).then(d => health = d).catch(() => {});
+    const interval = setInterval(() => {
+      fetch('/api/health').then(r => r.json()).then(d => health = d).catch(() => {});
+    }, 30000);
+    return () => clearInterval(interval);
+  });
+
+  function timeAgo(dateStr: string | null): string {
+    if (!dateStr) return '--';
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.floor(hrs / 24)}d ago`;
+  }
+
+  function shortModel(model: string): string {
+    if (!model) return '--';
+    const parts = model.split('/');
+    const name = parts[parts.length - 1];
+    if (name.includes('gemini')) return 'GEMINI';
+    if (name.includes('haiku')) return 'HAIKU';
+    if (name.includes('sonnet')) return 'SONNET';
+    if (name.includes('opus')) return 'OPUS';
+    if (name.includes('gpt')) return 'GPT';
+    return name.toUpperCase().slice(0, 12);
+  }
 </script>
 
 <footer
@@ -15,13 +46,13 @@
   <div
     class="flex items-center px-3 font-bold uppercase tracking-widest"
     style="
-      background: #007518;
+      background: {health.status === 'ok' ? '#007518' : '#be2d06'};
       color: white;
       font-size: 11px;
       border-right: 2px solid #383832;
     "
   >
-    SYS_OK
+    {health.status === 'ok' ? 'SYS_OK' : 'SYS_ERR'}
   </div>
 
   <!-- PIPELINE -->
@@ -33,10 +64,10 @@
       border-right: 2px solid #383832;
     "
   >
-    PIPELINE: {pipeline}
+    PIPELINE: {(health.pipeline || 'IDLE').toUpperCase()}
   </div>
 
-  <!-- BRANCHES -->
+  <!-- JOBS -->
   <div
     class="flex items-center px-3 font-bold uppercase tracking-widest"
     style="
@@ -45,7 +76,19 @@
       border-right: 2px solid #383832;
     "
   >
-    BRANCHES: {branches}
+    JOBS: {health.jobs}
+  </div>
+
+  <!-- LAST RUN -->
+  <div
+    class="flex items-center px-3 font-bold uppercase tracking-widest"
+    style="
+      font-size: 11px;
+      color: #383832;
+      border-right: 2px solid #383832;
+    "
+  >
+    LAST: {timeAgo(health.last_run)}
   </div>
 
   <!-- MODEL -->
@@ -56,6 +99,6 @@
       color: #383832;
     "
   >
-    MODEL: HAIKU
+    MODEL: {shortModel(health.model)}
   </div>
 </footer>

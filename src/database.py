@@ -141,8 +141,41 @@ class RTMDatabase:
             )
         """)
 
+        # Audit log table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                user_id INTEGER,
+                username TEXT,
+                action TEXT NOT NULL,
+                details TEXT,
+                ip_address TEXT
+            )
+        """)
+
         conn.commit()
         conn.close()
+
+    def log_action(self, username: str, action: str, details: str = "", user_id: int = 0):
+        """Log an audit action"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO audit_log (timestamp, user_id, username, action, details) VALUES (?, ?, ?, ?, ?)",
+            (datetime.now().isoformat(), user_id, username, action, details)
+        )
+        conn.commit()
+        conn.close()
+
+    def get_audit_log(self, limit: int = 100) -> list:
+        """Get recent audit log entries"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?", (limit,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
 
     def create_job(
         self,
