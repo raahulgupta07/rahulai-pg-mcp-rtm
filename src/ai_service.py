@@ -47,18 +47,12 @@ class AIService:
             return None
 
     # ================================================================
-    # MAIN METHOD: Generate all insights in one go during pipeline
+    # STEP-BY-STEP INSIGHT METHODS (called individually from pipeline)
     # ================================================================
-    def generate_all_insights(self, results_df: pd.DataFrame) -> Dict[str, str]:
-        """
-        Auto-generate all insights. Called once after classification.
-        Returns dict with keys: executive_summary, class_a_recs, class_b_recs, class_c_recs, growth_analysis
-        """
+    def generate_executive_summary(self, results_df: pd.DataFrame) -> str:
+        """Step 10: Generate executive summary."""
         stats = self._build_stats(results_df)
-        insights = {}
-
-        # 1. Executive Summary
-        insights["executive_summary"] = self._call_llm(
+        return self._call_llm(
             "You are a senior retail distribution analyst writing for a management team. Use markdown bullet points. Be data-driven and concise.",
             f"""Write an executive summary of this RTM outlet classification run:
 
@@ -73,7 +67,8 @@ Structure:
             max_tokens=800,
         ) or self._fallback_summary(results_df)
 
-        # 2. Class Recommendations (one call for all classes)
+    def generate_recommendations(self, results_df: pd.DataFrame) -> Dict[str, str]:
+        """Step 11: Generate class A/B/C recommendations."""
         class_data = {}
         for cls in ["Class A", "Class B", "Class C"]:
             cdf = results_df[results_df["Classification"].str.contains(cls.split()[-1], na=False)]
@@ -96,24 +91,26 @@ Use headers: ## Class A Recommendations, ## Class B Recommendations, ## Class C 
             max_tokens=1200,
         )
 
+        recs = {}
         if all_recs:
-            # Split into sections
             for cls_key, header in [("class_a_recs", "Class A"), ("class_b_recs", "Class B"), ("class_c_recs", "Class C")]:
                 section = self._extract_section(all_recs, header)
-                insights[cls_key] = section or self._fallback_recs(header)
+                recs[cls_key] = section or self._fallback_recs(header)
         else:
-            insights["class_a_recs"] = self._fallback_recs("Class A")
-            insights["class_b_recs"] = self._fallback_recs("Class B")
-            insights["class_c_recs"] = self._fallback_recs("Class C")
+            recs["class_a_recs"] = self._fallback_recs("Class A")
+            recs["class_b_recs"] = self._fallback_recs("Class B")
+            recs["class_c_recs"] = self._fallback_recs("Class C")
+        return recs
 
-        # 3. Growth Analysis
+    def generate_growth_analysis(self, results_df: pd.DataFrame) -> str:
+        """Step 12: Generate growth trend analysis."""
         periods = {}
         for period, col in [("2Yr", "TotalSales_2Yr"), ("12M", "TotalSales_12M"),
                              ("6M", "TotalSales_6M"), ("3M", "TotalSales_3M")]:
             if col in results_df.columns:
                 periods[period] = {"total": float(results_df[col].sum()), "avg": float(results_df[col].mean())}
 
-        insights["growth_analysis"] = self._call_llm(
+        return self._call_llm(
             "You are a growth analyst. Be specific with numbers and percentages. Use markdown bullets.",
             f"""Analyze sales trends for {len(results_df)} outlets:
 
@@ -128,6 +125,14 @@ Provide:
             max_tokens=600,
         ) or "Growth analysis not available."
 
+    # Legacy method — calls step-by-step methods
+    def generate_all_insights(self, results_df: pd.DataFrame) -> Dict[str, str]:
+        """Calls each insight step individually. Used as batch fallback."""
+        insights = {}
+        insights["executive_summary"] = self.generate_executive_summary(results_df)
+        recs = self.generate_recommendations(results_df)
+        insights.update(recs)
+        insights["growth_analysis"] = self.generate_growth_analysis(results_df)
         return insights
 
     # ================================================================

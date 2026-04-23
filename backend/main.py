@@ -210,10 +210,21 @@ async def classify(
                 log.append(f"[AI] {signal}: {cnt:,} outlets")
         log.append("[OK] AI enrichment complete")
 
-        # 5. AI insights (executive summary, recommendations)
-        log.append("$ mcp-agent insights --model gemini")
-        insights = ai_service.generate_all_insights(results_df)
-        log.append("[OK] AI insights generated")
+        # 5. AI insights (step by step)
+        insights = {}
+
+        log.append("$ mcp-agent insights --step executive-summary")
+        insights["executive_summary"] = ai_service.generate_executive_summary(results_df)
+        log.append("[OK] Executive summary generated")
+
+        log.append("$ mcp-agent insights --step recommendations")
+        recs = ai_service.generate_recommendations(results_df)
+        insights.update(recs)
+        log.append("[OK] Class A/B/C recommendations generated")
+
+        log.append("$ mcp-agent insights --step growth-analysis")
+        insights["growth_analysis"] = ai_service.generate_growth_analysis(results_df)
+        log.append("[OK] Growth analysis generated")
 
         # 5b. Workload data
         workload = []
