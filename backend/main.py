@@ -179,7 +179,8 @@ async def classify(
         # 7. Save to database via job manager
         date_from = str(classifier.min_date.date()) if classifier.min_date else None
         date_to = str(classifier.max_date.date()) if classifier.max_date else None
-        job_manager.complete_job(results_df, date_from=date_from, date_to=date_to)
+        wl_df = classifier.route_workload if hasattr(classifier, 'route_workload') else None
+        job_manager.complete_job(results_df, date_from=date_from, date_to=date_to, workload_df=wl_df)
         log.append("Job saved to database")
 
         # 8. Compute summary counts
