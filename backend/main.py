@@ -167,6 +167,11 @@ async def classify(
         insights = ai_service.generate_all_insights(results_df)
         log.append("AI insights generated")
 
+        # 5b. Workload data
+        workload = []
+        if hasattr(classifier, 'route_workload') and classifier.route_workload is not None:
+            workload = df_to_records(classifier.route_workload)
+
         # 6. Build branch summary
         branch_summary_df = classifier.get_branch_summary()
         branch_summary = df_to_records(branch_summary_df) if branch_summary_df is not None else []
@@ -253,6 +258,27 @@ async def classify(
                 "impact": "No F4 (Class A Local) classifications assigned"
             })
 
+        # Check seller workload
+        if hasattr(classifier, 'route_workload') and classifier.route_workload is not None:
+            wl = classifier.route_workload
+            below = len(wl[wl["Workload_Status"] == "BELOW_MIN"])
+            above = len(wl[wl["Workload_Status"] == "ABOVE_MAX"])
+            ok_count = len(wl[wl["Workload_Status"] == "OK"])
+            if below > 0:
+                data_quality.append({
+                    "field": "Seller Workload",
+                    "status": "warning",
+                    "message": f"{below} routes have fewer outlets than minimum target (YGN: 25, Regional: 30)",
+                    "impact": f"These sellers may need additional outlet assignments"
+                })
+            if above > 0:
+                data_quality.append({
+                    "field": "Seller Workload",
+                    "status": "info",
+                    "message": f"{above} routes exceed maximum target (YGN: 30, Regional: 35)",
+                    "impact": f"Consider splitting these routes for better coverage"
+                })
+
         # All good checks
         good_checks = []
         if "BranchName" in sales_df.columns and sales_df["BranchName"].nunique() > 1:
@@ -261,6 +287,10 @@ async def classify(
             good_checks.append(f"Cus.Code: {sales_df['Cus.Code'].nunique()} unique customers found")
         if "DocDate" in sales_df.columns:
             good_checks.append(f"DocDate: {classifier.min_date.date()} to {classifier.max_date.date()}")
+        if hasattr(classifier, 'route_workload') and classifier.route_workload is not None:
+            wl = classifier.route_workload
+            ok_count = len(wl[wl["Workload_Status"] == "OK"])
+            good_checks.append(f"RouteCode: {len(wl)} routes analyzed — {ok_count} within target range")
 
         # 9b. Save AI insights to database
         db = get_database()
@@ -279,6 +309,7 @@ async def classify(
             "wholesalers": ws_count,
             "revenue": total_revenue,
             "results": results_records,
+            "workload": workload,
             "branch_summary": branch_summary,
             "insights": insights,
             "log": log,

@@ -428,7 +428,7 @@
   });
 
   // Explorer table columns
-  const explorerCols = ['Cus.Code', 'Cus.Name', 'BranchName', 'Classification', 'TotalSales_2Yr', 'TotalSales_12M', 'TotalSales_6M', 'TotalSales_3M', 'TransactionCount', 'Overall_Contribution_Pct'];
+  const explorerCols = ['Cus.Code', 'Cus.Name', 'BranchName', 'Classification', 'Visit_Frequency', 'TotalSales_2Yr', 'TotalSales_12M', 'TotalSales_6M', 'TotalSales_3M', 'TransactionCount', 'Overall_Contribution_Pct'];
 
   // Analytics: branch comparison bars (computed from filteredResults)
   let branchBars = $derived(() => {
@@ -1099,6 +1099,49 @@
       <ChapterHeading title="Branch Matrix" subtitle="Performance across all branches" />
       <DataTable title="BRANCHES" data={branchMatrix()} columns={['Branch', 'Outlets', 'Revenue', 'Class A', 'Class B', 'Class C', 'A %']} maxHeight="400px" />
     </div>
+
+    <!-- Seller Workload -->
+    {#if data.workload?.length > 0}
+      <div style="margin-bottom:24px;">
+        <ChapterHeading title="Seller Workload" subtitle="Route outlet counts vs targets (YGN: 25-30, Regional: 30-35)" />
+        <div style="border:3px solid #383832;box-shadow:4px 4px 0 #383832;overflow:hidden;">
+          <div style="padding:8px 12px;background:#383832;color:#feffd6;font-size:10px;font-weight:900;letter-spacing:0.1em;display:flex;justify-content:space-between;">
+            <span>ROUTE WORKLOAD</span>
+            <span style="opacity:0.7;">{data.workload.length} ROUTES</span>
+          </div>
+          <div style="max-height:400px;overflow-y:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:11px;">
+              <thead>
+                <tr>
+                  <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:left;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">BRANCH</th>
+                  <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:left;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">ROUTE</th>
+                  <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:center;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">OUTLETS</th>
+                  <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:center;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">TARGET</th>
+                  <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:center;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">STATUS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each data.workload as row, i}
+                  <tr style="background:{i % 2 === 0 ? 'white' : '#fcf9ef'};border-bottom:1px solid #ebe8dd;">
+                    <td style="padding:6px 12px;font-weight:700;font-size:10px;">{row.BranchName}</td>
+                    <td style="padding:6px 12px;font-size:10px;font-family:monospace;">{row.RouteCode}</td>
+                    <td style="padding:6px 12px;text-align:center;font-weight:700;">{row.OutletCount}</td>
+                    <td style="padding:6px 12px;text-align:center;font-size:10px;color:#828179;">{row.BranchName === 'Yangon' ? '25-30' : '30-35'}</td>
+                    <td style="padding:6px 12px;text-align:center;">
+                      <span style="font-size:9px;font-weight:900;padding:2px 8px;
+                        {row.Workload_Status === 'OK' ? 'background:#dcfce7;color:#007518;' :
+                         row.Workload_Status === 'BELOW_MIN' ? 'background:#fee2e2;color:#be2d06;' :
+                         'background:#fef9c3;color:#856404;'}
+                      ">{row.Workload_Status === 'OK' ? 'OK' : row.Workload_Status === 'BELOW_MIN' ? 'BELOW MIN' : 'ABOVE MAX'}</span>
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    {/if}
 
     <!-- AI insight panel -->
     {#if data.insights}

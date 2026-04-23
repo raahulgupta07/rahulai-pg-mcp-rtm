@@ -27,6 +27,7 @@ class RTMClassifier:
         self.results = None
         self.max_date = None
         self.min_date = None
+        self.route_workload = None
 
     def validate_data(self):
         """Validate required columns exist"""
@@ -334,6 +335,16 @@ class RTMClassifier:
 
             bdf["Classification"] = bdf.apply(apply_special_rules, axis=1)
 
+            # Add Visit Frequency tier (F4 = high priority, F2 = standard)
+            def assign_frequency_tier(row):
+                cls = str(row.get("Classification", ""))
+                if "Class A" in cls:
+                    return "F4"
+                else:
+                    return "F2"
+
+            bdf["Visit_Frequency"] = bdf.apply(assign_frequency_tier, axis=1)
+
             all_branch_results.append(bdf)
 
         result = pd.concat(all_branch_results, ignore_index=True)
@@ -394,6 +405,37 @@ class RTMClassifier:
 
         print("\nStep 7: Calculating frequency...")
         df = self.calculate_frequency(df)
+
+        print("\nStep 8: Seller workload analysis...")
+        if "RouteCode" in self.sales.columns:
+            # Count unique outlets per route per branch
+            route_outlets = self.sales.groupby(["BranchName", "RouteCode"])["Cus.Code"].nunique().reset_index()
+            route_outlets.columns = ["BranchName", "RouteCode", "OutletCount"]
+
+            # Define thresholds
+            def check_workload(row):
+                branch = row["BranchName"]
+                count = row["OutletCount"]
+                if branch == "Yangon":
+                    min_target, max_target = 25, 30
+                else:
+                    min_target, max_target = 30, 35
+
+                if count < min_target:
+                    return "BELOW_MIN"
+                elif count > max_target:
+                    return "ABOVE_MAX"
+                return "OK"
+
+            route_outlets["Workload_Status"] = route_outlets.apply(check_workload, axis=1)
+            self.route_workload = route_outlets
+
+            below = len(route_outlets[route_outlets["Workload_Status"] == "BELOW_MIN"])
+            above = len(route_outlets[route_outlets["Workload_Status"] == "ABOVE_MAX"])
+            print(f"  Routes: {len(route_outlets)} total, {below} below minimum, {above} above maximum")
+        else:
+            self.route_workload = None
+            print("  RouteCode not found — skipping workload analysis")
 
         self.results = df
 

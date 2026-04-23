@@ -106,6 +106,7 @@
       'Cus.Name': getField(r, 'Cus.Name', 'Cus_Name'),
       Branch: getField(r, 'BranchName', 'Branch', 'branch_name'),
       Classification: r.Classification || '',
+      'Visit Freq': r.Visit_Frequency || '-',
       '2Yr Sales': fmtNum(r.TotalSales_2Yr || 0),
       '12M Sales': fmtNum(r.TotalSales_12M || 0),
       '6M Sales': fmtNum(r.TotalSales_6M || 0),
@@ -118,7 +119,7 @@
     }));
   });
 
-  const columns = ['Cus.Code', 'Cus.Name', 'Branch', 'Classification', '2Yr Sales', '12M Sales', '6M Sales', '3M Sales', 'Transactions', 'Contrib %', 'Growth', 'Risk', 'Priority'];
+  const columns = ['Cus.Code', 'Cus.Name', 'Branch', 'Classification', 'Visit Freq', '2Yr Sales', '12M Sales', '6M Sales', '3M Sales', 'Transactions', 'Contrib %', 'Growth', 'Risk', 'Priority'];
 
   // CSV export from filtered data
   function exportCSV() {
