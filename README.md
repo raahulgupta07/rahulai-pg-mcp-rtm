@@ -20,7 +20,7 @@ Built for P&G Myanmar market data — 11,000+ outlets, 9 branches.
 - **Job Sharing** — share a specific job with specific users
 - **Beautified Excel** — multi-sheet report incl. run-info stamp + comparison sheets
 - **Coverage Gap Analysis** — township breakdown
-- **Theming** — light/dark, 6 palettes + custom accent, saved per user
+- **Claude.ai-style Design** — flat zero-radius, Inter font, cream `#FAF9F5` / terracotta `#C96442` token system, light/dark/auto, 6 palettes + custom accent (per-user)
 - **Audit Log** — every action tracked, incl. failed logins
 - **Account management** — password change/reset, disable, LDAP merge
 
@@ -117,6 +117,22 @@ Defaults — all configurable on the **Rules** page, version-tracked with rollba
 - **LDAP** (Settings ▸ LDAP) — up to 5 directory servers, per-server Test
 - **Groups** (Settings ▸ Groups) — define groups, grant permissions, map to LDAP groups
 - **Appearance** — theme, palette, density (per-user)
+
+## Design System
+
+**Claude.ai-style, flat** (zero border-radius). CSS variables only — no hardcoded colors.
+
+| Token | Light | Dark |
+|-------|-------|------|
+| `--bg` | `#FAF9F5` cream | `#1F1E1B` |
+| `--accent` | `#C96442` terracotta | `#E89070` |
+| `--text` | `#2C2B26` | `#EDEAE0` |
+| Font | Inter (system fallback) | same |
+| Radius | `0` everywhere | same |
+
+**Components:** `KpiCard`, `DataTable`, `Badge` (A/B/C/F4 solid + soft), `ChapterHeading`, `Appearance` modal (6 palettes + density + accent picker), `ChangePassword` modal.
+
+**Shell:** desktop left sidebar + mobile bottom nav (`+layout.svelte:422`).
 
 ## Scalability
 

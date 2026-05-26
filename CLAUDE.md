@@ -161,9 +161,19 @@ Audit Log (filterable + CSV) · Jobs · Cost · Auth & Security (local vs LDAP, 
 - Worker-thread pool raised to 64 — handles ~100 concurrent users
 
 ## Design System
-Claude.ai-style, **flat** (zero border-radius). Inter font; token CSS variables;
-light/dark/auto; **Appearance** modal (6 palettes + custom accent, density; per-user).
-Desktop sidebar + mobile bottom nav.
+**Claude.ai-style, flat** (zero border-radius). Inter font; token-only CSS variables
+(no hardcoded colors). Light/dark/auto via `[data-theme]` on `<html>`.
+
+| Token | Light | Dark |
+|-------|-------|------|
+| `--bg` | `#FAF9F5` cream | `#1F1E1B` |
+| `--accent` | `#C96442` terracotta | `#E89070` |
+| `--text` | `#2C2B26` | `#EDEAE0` |
+
+**Appearance** modal — 6 palettes + custom accent + density (per-user, persisted in
+`/api/preferences`). Desktop left sidebar + mobile bottom nav (`+layout.svelte`).
+Reusable components: `KpiCard`, `DataTable`, `Badge` (A/B/C/F4), `ChapterHeading`,
+`Appearance`, `ChangePassword`. **No cyber/terminal theme — fully migrated 2026-05-26.**
 
 ## Environment Variables
 ```
