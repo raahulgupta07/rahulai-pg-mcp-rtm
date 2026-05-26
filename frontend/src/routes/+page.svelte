@@ -164,6 +164,24 @@
   });
 
 
+  // Warn user before refresh/close during upload or processing.
+  // Upload XHR is in-flight in browser memory — refresh cancels it irrecoverably.
+  // Processing IS recoverable (job runs server-side), but warning still useful.
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    const handler = (e: BeforeUnloadEvent) => {
+      if (state === 'uploading' || state === 'processing') {
+        e.preventDefault();
+        e.returnValue = state === 'uploading'
+          ? 'Upload in progress — leaving will cancel it. Continue?'
+          : 'Classification still running. Refreshing will reattach to it.';
+        return e.returnValue;
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  });
+
   // Check if there's a job ID in URL params on mount.
   // If the job is still running, resume polling instead of loading from history.
   $effect(() => {
