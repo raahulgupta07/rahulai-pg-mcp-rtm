@@ -387,15 +387,22 @@ async def _run_classify_pipeline(
     else:
         raise HTTPException(status_code=400, detail="Provide upload_id or file")
 
+    # Fire step=1 BEFORE the heavy parse so UI advances immediately.
+    # Wrap pd.read_csv in run_in_threadpool — 257 MB read takes ~15s and
+    # would otherwise block the event loop (no other coro can run, no log
+    # flush, polling backs up).
+    report(step=1, msg="Parsing CSV from disk")
     log.append("$ rtm-agent upload --parse-csv")
     sales_df = None
     for encoding in ("utf-8", "latin-1", "cp1252"):
         try:
             if upload_path:
-                sales_df = pd.read_csv(upload_path, encoding=encoding, low_memory=False)
+                sales_df = await run_in_threadpool(
+                    pd.read_csv, upload_path, encoding=encoding, low_memory=False)
             else:
                 raw_bytes = await file.read()
-                sales_df = pd.read_csv(io.BytesIO(raw_bytes), encoding=encoding, low_memory=False)
+                sales_df = await run_in_threadpool(
+                    pd.read_csv, io.BytesIO(raw_bytes), encoding=encoding, low_memory=False)
             log.append(f"[OK] CSV parsed ({encoding}): {len(sales_df):,} rows, {len(sales_df.columns)} columns")
             break
         except (UnicodeDecodeError, pd.errors.ParserError):
@@ -446,7 +453,6 @@ async def _run_classify_pipeline(
             threshold_b=threshold_b,
         )
     log.append(f"[INFO] Job ID: {job_id[:8]}...")
-    report(step=1, msg="Validating + parsing CSV", log_line=None)
 
     try:
         # 3. Run classification pipeline (with the active rule config)
