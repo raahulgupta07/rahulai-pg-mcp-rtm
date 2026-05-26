@@ -472,15 +472,9 @@
       }, 50);
     }
 
-    // Start typing step 0 immediately
-    typeStepLines(0);
-
-    const stepInterval = setInterval(async () => {
-      if (currentStep < 9) {
-        currentStep++;
-        await typeStepLines(currentStep);
-      }
-    }, 3500);
+    // Real backend log streams via polling — no fake hardcoded animation.
+    // (Kept stepInterval var as no-op so existing clearInterval calls are safe.)
+    const stepInterval = setInterval(() => {}, 60000);
 
     const typeInterval = 0; // unused, kept for clearInterval compat
 
