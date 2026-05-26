@@ -337,10 +337,23 @@ async def _run_classify_pipeline(
     job_id_override: str | None = None,
     db_progress: bool = False,
 ) -> dict:
-    log: list[str] = []
     db_singleton = get_database() if db_progress else None
     current_step = {"n": 0}
     total_steps = 10
+
+    # Auto-flushing log list: every append also pushes to jobs.progress_log
+    # so frontend polling sees live updates. Existing log.append(...) calls
+    # throughout the pipeline are unchanged — they just stream now.
+    class _StreamingLog(list):
+        def append(self, item):
+            super().append(item)
+            if db_progress and db_singleton is not None and job_id_override is not None:
+                try:
+                    db_singleton.update_job_progress(job_id_override, log_append=str(item))
+                except Exception:
+                    pass
+
+    log: list = _StreamingLog()
 
     def report(step: int | None = None, msg: str | None = None, log_line: str | None = None):
         if log_line is not None:
@@ -355,10 +368,9 @@ async def _run_classify_pipeline(
                 step=current_step["n"],
                 total=total_steps,
                 message=msg,
-                log_append=log_line,
             )
         except Exception:
-            pass  # never let progress write kill the pipeline
+            pass
 
     # 1. Resolve input — either staged upload (preferred) or legacy direct file
     upload_path: Path | None = None
