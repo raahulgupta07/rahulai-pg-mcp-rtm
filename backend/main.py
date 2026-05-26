@@ -494,17 +494,19 @@ async def _run_classify_pipeline(
         n_chunks = (max(1, ai_service.enrich_top_n) + ai_service.chunk_size - 1) // ai_service.chunk_size
         log.append(f"[OK] AI complete — 3 macro calls + {n_chunks} outlet chunks (max {ai_service.max_concurrent} concurrent) in {ai_elapsed:.1f}s")
 
+        report(step=5, msg="Calculating purchase frequency + workload")
         # 5b. Workload data
         workload = []
         if hasattr(classifier, 'route_workload') and classifier.route_workload is not None:
             workload = df_to_records(classifier.route_workload)
 
         # 6. Build branch summary
+        report(step=6, msg="Building per-branch summary matrix")
         branch_summary_df = classifier.get_branch_summary()
         branch_summary = df_to_records(branch_summary_df) if branch_summary_df is not None else []
 
-        # 7. Save to database via job manager
-        report(step=7, msg="Persisting job + results to database")
+        # 7. Save to database via job manager (bulk COPY)
+        report(step=7, msg="Bulk COPY classification results to Postgres")
         date_from = str(classifier.min_date.date()) if classifier.min_date else None
         date_to = str(classifier.max_date.date()) if classifier.max_date else None
         wl_df = classifier.route_workload if hasattr(classifier, 'route_workload') else None
@@ -664,13 +666,15 @@ async def _run_classify_pipeline(
             good_checks.append(f"RouteCode: {len(wl)} routes analyzed — {ok_count} within target range")
 
         # 9b. Save AI insights to database
+        report(step=8, msg="Saving AI insights + data quality")
         db = get_database()
         db.save_job_insights(job_id, insights, data_quality)
 
         # 10. Build response
-        report(step=10, msg="Building response payload")
+        report(step=9, msg="Computing run-vs-previous comparison")
         results_records = df_to_records(results_df)
         comparison = await run_in_threadpool(compute_run_comparison, job_id)
+        report(step=10, msg="Building response payload")
 
         return {
             "job_id": job_id,

@@ -146,9 +146,13 @@ class RTMClassifier:
             "Outlet Channel": "first",
         }
 
-        # Add extra columns if present (incl. geo + contact)
+        # Carry through per-outlet meta columns (.first() = one stable value per outlet).
+        # Per-transaction cols (ItemCode/Quantity/Price/InvoiceNo) intentionally skipped —
+        # they're per-line not per-outlet; surface those via a separate detail view.
         extra_cols = ["Channel", "GroupName", "Latitude", "Longitude", "Township",
-                      "CntctPrsn", "Address", "Phone1"]
+                      "CntctPrsn", "Address", "Phone1",
+                      "RouteCode", "RouteName", "VAN", "SalesGroup", "Principal",
+                      "Route_SalesGroup", "Ref"]
         for col in extra_cols:
             if col in self.sales.columns:
                 agg_dict[col] = "first"

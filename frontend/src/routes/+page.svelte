@@ -164,13 +164,69 @@
   });
 
 
-  // Check if there's a job ID in URL params on mount
+  // Check if there's a job ID in URL params on mount.
+  // If the job is still running, resume polling instead of loading from history.
   $effect(() => {
-    const jobId = $page.url.searchParams.get('job');
+    const jobId = $page.url.searchParams.get('job')
+                  || (typeof window !== 'undefined' ? localStorage.getItem('rtm_active_job') : null);
     if (jobId && !data) {
-      loadJob(jobId);
+      resumeOrLoadJob(jobId);
     }
   });
+
+  async function resumeOrLoadJob(jobId: string) {
+    try {
+      const st = await getJobStatus(jobId);
+      if (st.status === 'completed' && st.ready) {
+        try { localStorage.removeItem('rtm_active_job'); } catch {}
+        loadJob(jobId);
+        return;
+      }
+      if (st.status === 'failed' || st.error) {
+        try { localStorage.removeItem('rtm_active_job'); } catch {}
+        return;
+      }
+      // Still running — resume polling + reattach to terminal
+      state = 'processing';
+      currentStep = st.step || 0;
+      terminalLines = [
+        '[RTM AGENT] Resuming in-progress job after refresh...',
+        `[RTM AGENT] Job ID: ${jobId}`,
+        '',
+        ...(st.log || [])
+      ];
+      let lastLogLen = (st.log || []).length;
+      while (true) {
+        await new Promise(r => setTimeout(r, 2000));
+        const s = await getJobStatus(jobId);
+        if (s.log && s.log.length > lastLogLen) {
+          terminalLines = [...terminalLines, ...s.log.slice(lastLogLen)];
+          lastLogLen = s.log.length;
+          setTimeout(() => {
+            const el = document.getElementById('terminal-scroll');
+            if (el) el.scrollTop = el.scrollHeight;
+          }, 50);
+        }
+        currentStep = s.step || currentStep;
+        if (s.status === 'failed' || s.error) {
+          throw new Error(s.error || s.message || 'Classification failed');
+        }
+        if (s.ready) break;
+      }
+      data = await getJobResult(jobId);
+      try { localStorage.removeItem('rtm_active_job'); } catch {}
+      logEntries = data.log || [];
+      currentStep = 10;
+      state = 'results';
+      if (data?.job_id) {
+        getF4Analysis(data.job_id).then(r => f4Data = r).catch(() => f4Data = null);
+      }
+    } catch (e: any) {
+      try { localStorage.removeItem('rtm_active_job'); } catch {}
+      error = e.message || 'Failed to resume job';
+      state = 'upload';
+    }
+  }
 
   // Load default thresholds from settings
   $effect(() => {
@@ -345,6 +401,13 @@
     try {
       // Kick off async background job — returns instantly
       const { job_id } = await classifyAsync(uploaded.upload_id, thresholdA, thresholdB);
+      // Persist job_id so a refresh resumes polling instead of losing state
+      try {
+        localStorage.setItem('rtm_active_job', job_id);
+        const url = new URL(window.location.href);
+        url.searchParams.set('job', job_id);
+        window.history.replaceState({}, '', url);
+      } catch {}
       // Poll status every 2s until ready (no LB timeout issue)
       let lastLogLen = 0;
       while (true) {
@@ -388,6 +451,7 @@
       currentStep = 10;
       await new Promise(r => setTimeout(r, 1500));
       state = 'results';
+      try { localStorage.removeItem('rtm_active_job'); } catch {}
       // Kick off F4 deep-dive fetch in background
       if (data?.job_id) {
         getF4Analysis(data.job_id).then(r => f4Data = r).catch(() => f4Data = null);
