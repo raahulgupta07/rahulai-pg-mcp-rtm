@@ -98,6 +98,10 @@
     if (selectedClass !== 'All') {
       if (selectedClass === 'Class A') {
         rows = rows.filter(r => String(r.Classification || '').startsWith('Class A'));
+      } else if (selectedClass === 'F4 Distributor') {
+        rows = rows.filter(r => /F4/i.test(String(r.Classification || '')));
+      } else if (selectedClass === 'Pure A') {
+        rows = rows.filter(r => r.Classification === 'Class A');
       } else {
         rows = rows.filter(r => r.Classification === selectedClass);
       }
@@ -133,10 +137,15 @@
       Growth: r.AI_Growth_Signal || '-',
       Risk: r.AI_Risk_Level || '-',
       Priority: r.AI_Visit_Priority || '-',
+      Township: r.Township || '-',
+      Lifecycle: r.Lifecycle_Stage || '-',
+      Contact: r.CntctPrsn || '-',
+      Phone: r.Phone1 || '-',
+      Address: r.Address || '-',
     }));
   });
 
-  const columns = ['Cus.Code', 'Cus.Name', 'Branch', 'Classification', 'Visit Freq', '2Yr Sales', '12M Sales', '6M Sales', '3M Sales', 'Transactions', 'Contrib %', 'Growth', 'Risk', 'Priority'];
+  const columns = ['Cus.Code', 'Cus.Name', 'Branch', 'Township', 'Classification', 'Lifecycle', 'Visit Freq', '2Yr Sales', '12M Sales', '6M Sales', '3M Sales', 'Transactions', 'Contrib %', 'Growth', 'Risk', 'Priority', 'Contact', 'Phone', 'Address'];
 
   // CSV export from filtered data
   function exportCSV() {
@@ -231,7 +240,12 @@
           <label class="label" for="rtm-class">Class</label>
           <select id="rtm-class" class="select" bind:value={selectedClass}>
             <option>All</option>
-            {#each classes as c}
+            <option>Class A</option>
+            <option>F4 Distributor</option>
+            <option>Pure A</option>
+            <option>Class B</option>
+            <option>Class C</option>
+            {#each classes.filter((c: string) => !['Class A','Class B','Class C','Class A Local (F4)'].includes(c)) as c}
               <option>{c}</option>
             {/each}
           </select>
@@ -268,8 +282,8 @@
 
 <style>
   .page {
-    max-width: 1280px;
-    margin: 0 auto;
+    width: 100%;
+    margin: 0;
     padding: 24px;
   }
 

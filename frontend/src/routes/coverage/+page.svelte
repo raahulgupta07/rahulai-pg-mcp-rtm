@@ -124,6 +124,9 @@
           Branch: ${o.branch ?? '—'}<br/>
           Township: ${o.township ?? '—'}<br/>
           Revenue: ${fmtRevenue(o.revenue)}
+          ${o.contact ? `<br/>Contact: ${o.contact}` : ''}
+          ${o.phone ? `<br/>Phone: ${o.phone}` : ''}
+          ${o.address ? `<br/><span style="opacity:0.75">${o.address}</span>` : ''}
         </div>`
       );
       clusterGroup.addLayer(m);
@@ -283,7 +286,7 @@
               <option value="A">Class A</option>
               <option value="B">Class B</option>
               <option value="C">Class C</option>
-              <option value="F4">F4 Wholesaler</option>
+              <option value="F4">F4 Distributor</option>
             </select>
           </label>
           <div class="map-count">
@@ -469,8 +472,8 @@
 <style>
   .page {
     padding: 2rem;
-    max-width: 1400px;
-    margin: 0 auto;
+    width: 100%;
+    margin: 0;
   }
 
   .page-head {

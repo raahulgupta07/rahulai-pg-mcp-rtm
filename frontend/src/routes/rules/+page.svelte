@@ -582,7 +582,7 @@
 </div>
 
 <style>
-  .page { max-width: 1100px; margin: 0 auto; }
+  .page { width: 100%; margin: 0; }
 
   .page-head {
     display: flex;

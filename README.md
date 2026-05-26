@@ -6,9 +6,14 @@ Built for P&G Myanmar market data — 11,000+ outlets, 9 branches.
 ## Features
 
 - **Pareto Classification** — outlets graded Class A / B / C per branch, each branch its own universe
-- **Configurable Rule Engine** — every threshold, the wholesaler rule, category overrides,
+- **F4 Distributor as first-class** — wholesalers (≥N cartons/brand/month Local) forced-A, broken out across UI: own KPI card, own summary row, own RTM Data filter, own map color, own Excel row, own deep-dive dashboard with health score + churn-risk follow-up list
+- **Outlet Lifecycle Cohorts** — every outlet stamped New / Active / Reactivated / Dormant / Lost from DocDate
+- **Configurable Rule Engine** — every threshold, the F4 rule, category overrides,
   AI behaviour — all tuned from the UI (`/rules`), versioned with one-click rollback
-- **AI Enrichment** — growth signal, risk level, visit priority, per-outlet actions + LLM insights
+- **2-Stage Upload** — file lands on app disk first (XHR with live % progress, up to 2 GB), DB write only after classification completes
+- **CSV Preview** — client-side parse of first 8 MB on file pick: row/branch/outlet counts, sample table, column-match chips (required/optional), branch distribution bars
+- **Parallel AI Pipeline** — 3 macro insight calls + chunked per-outlet enrichment run concurrently (asyncio.gather + Semaphore), ~3-4x faster than serial
+- **AI Enrichment** — growth signal, risk level, visit priority, per-outlet actions + LLM insights (chunked, top-N)
 - **LLM Cost Tracking** — real OpenRouter token + USD cost captured per job
 - **Run Comparison** — every run compared to the previous: class counts, revenue, channels,
   branches, outlet movement — on screen and in Excel
@@ -18,8 +23,9 @@ Built for P&G Myanmar market data — 11,000+ outlets, 9 branches.
 - **LDAP / Active Directory** — up to 5 servers, per-user home server, email auto-merge,
   group-membership sync
 - **Job Sharing** — share a specific job with specific users
-- **Beautified Excel** — multi-sheet report incl. run-info stamp + comparison sheets
-- **Coverage Gap Analysis** — township breakdown
+- **Beautified Excel** — multi-sheet report incl. run-info stamp + comparison sheets + Class A (total) rollup row
+- **Coverage Gap Analysis** — township breakdown + Leaflet map with class-coloured outlet markers (F4 own teal color, contact/phone/address in popup)
+- **Full-width Layout** — every page uses full content width; sidebar + content shell only
 - **Claude.ai-style Design** — flat zero-radius, Inter font, cream `#FAF9F5` / terracotta `#C96442` token system, light/dark/auto, 6 palettes + custom accent (per-user)
 - **Audit Log** — every action tracked, incl. failed logins
 - **Account management** — password change/reset, disable, LDAP merge
@@ -105,10 +111,23 @@ Defaults — all configurable on the **Rules** page, version-tracked with rollba
 
 | Class | Rule | Visit Freq |
 |-------|------|-----------|
-| **A** | cumulative % ≤ 80% | F4 |
-| **B** | 80% < cumulative % ≤ 95% | F2 |
-| **C** | cumulative % > 95% | F2 |
-| **F4** | ≥ 3 cartons/brand/month (Local) | F4 — override to A |
+| **Pure Class A** | cumulative % ≤ 80% (revenue rank) | F4 |
+| **Class A (category)** | ≥ 80% of any Item Class within branch | F4 |
+| **F4 Distributor** | ≥ N cartons/brand/month (Local), default N=3 — forced-A | F4 |
+| **Class B** | 80% < cumulative % ≤ 95% | F2 |
+| **Class C** | cumulative % > 95% | F2 |
+
+> **Class A (total)** = Pure A + F4 Distributor + Class A (category). All three
+> sub-types are visible on the dashboard, Excel summary, and RTM Data filter.
+
+### Outlet Lifecycle (cohort stage from DocDate)
+| Stage | Definition |
+|-------|-----------|
+| New | First purchase < 3M ago |
+| Active | Bought in last 3M |
+| Reactivated | Returned after >6M gap |
+| Dormant | Last buy 3–12M ago |
+| Lost | Last buy > 12M ago |
 
 ## Configuration — all from the UI
 

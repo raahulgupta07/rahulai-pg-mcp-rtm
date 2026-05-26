@@ -97,7 +97,9 @@ PG-MCP-RTM/
 | GET | `/api/auth/me` | Yes — user + prefs + permissions |
 | POST | `/api/auth/change-password` | Yes — own password (verifies old) |
 | GET/POST | `/api/preferences` | Yes — per-user appearance |
-| POST | `/api/classify` | Yes — offloaded to a worker thread |
+| POST | `/api/upload` · DELETE `/api/upload/{id}` | Yes — stages file to disk first |
+| POST | `/api/classify?upload_id=X` | Yes — reads staged file, runs pipeline |
+| GET | `/api/f4-analysis?job_id=X` | Yes — F4 deep-dive: health, top-10, churn-risk, per-branch |
 | GET | `/api/jobs` · `/api/jobs/{id}` | Yes — own + shared; admin+ sees all |
 | GET | `/api/jobs/{id}/export` · `/comparison` | Yes |
 | GET/POST | `/api/jobs/{id}/shares` · `/share` | Yes — owner/admin shares a job |
@@ -117,11 +119,39 @@ PG-MCP-RTM/
 
 ## Classification Logic
 Single CSV → Pareto split per `BranchName` (each branch is its own universe):
-- **Class A** ≤ Class A cutoff (default 80%) · **Class B** between cutoffs · **Class C** above
-- **F4 wholesaler** — ≥N cartons/brand/month of a chosen item type → forced Class A Local (F4)
+- **Pure Class A** ≤ Class A cutoff (default 80%) · **Class B** between cutoffs · **Class C** above
+- **F4 Distributor** — ≥N cartons/brand/month of a chosen item type → forced Class A Local (F4).
+  **Treated as first-class across the app** — own KPI card, own summary row,
+  own RTM Data filter, own teal map marker, own Excel row, own deep-dive dashboard
+  with health score + churn-risk follow-up list (`GET /api/f4-analysis`).
 - **Category override** — outlet dominating a category (≥cutoff%) → Class A {category}
+- **Class A (total)** = Pure A + F4 + Category — explicit rollup row
 
 All thresholds are **config-driven** (`/rules`) — no hardcoded values.
+
+## Outlet Lifecycle (cohort)
+Every outlet stamped from DocDate: **New** (first buy <3M) · **Active** (bought <3M)
+· **Reactivated** (returned after >6M gap) · **Dormant** (3–12M ago) · **Lost** (>12M ago).
+Surfaced as 5-card KPI strip on Classify results + column on RTM Data + Excel.
+
+## Upload Flow (2-stage)
+1. `POST /api/upload` — streams file (8 MB chunks) to `/app/uploads/{id}_{name}` on disk.
+   XHR with `upload.onprogress` → live % bar. Cap 2 GB (frontend).
+2. `POST /api/classify?upload_id=X` — reads staged file, runs pipeline, writes DB.
+   `finally:` unlinks staged file.
+
+CSV preview (8 MB slice, client-side parse): row/branch/outlet counts, sample table,
+column-match chips, branch bars. No upload until "Run Classification" clicked.
+
+## AI Pipeline (parallel + chunked)
+`backend/main.py` calls `await asyncio.gather(enrich_task, insights_task)`:
+- **3 macro calls** (exec summary, A/B/C recs, growth analysis) fan out via
+  `loop.run_in_executor` → `asyncio.gather`
+- **Per-outlet enrichment** splits top-N into chunks (default 10), gated by
+  `asyncio.Semaphore(max_concurrent)` (default 5). Returns `{cus_code: insight}`
+  JSON per chunk → merged on Cus.Code (out-of-order safe).
+- Total elapsed ≈ max(layers), not sum. ~3-4x speedup. New `ai.chunk_size` +
+  `ai.max_concurrent` keys in `rule_config.json`.
 
 ## Rule Engine (`/rules`)
 `data/rule_config.json` (defaults `backend/rule_defaults.py`): sections `pareto`,

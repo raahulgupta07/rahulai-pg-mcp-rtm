@@ -66,6 +66,10 @@ JOB_RESULTS_COLUMNS = [
     ("Latitude", "DOUBLE PRECISION"),
     ("Longitude", "DOUBLE PRECISION"),
     ("Township", "TEXT"),
+    ("CntctPrsn", "TEXT"),
+    ("Address", "TEXT"),
+    ("Phone1", "TEXT"),
+    ("Lifecycle_Stage", "TEXT"),
 ]
 
 
@@ -156,6 +160,10 @@ class RTMDatabase:
                 '"Latitude" DOUBLE PRECISION',
                 '"Longitude" DOUBLE PRECISION',
                 '"Township" TEXT',
+                '"CntctPrsn" TEXT',
+                '"Address" TEXT',
+                '"Phone1" TEXT',
+                '"Lifecycle_Stage" TEXT',
             ):
                 cur.execute(f"ALTER TABLE job_results ADD COLUMN IF NOT EXISTS {col_def}")
 

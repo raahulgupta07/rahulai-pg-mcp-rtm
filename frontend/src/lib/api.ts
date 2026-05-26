@@ -17,12 +17,57 @@ async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-export async function classify(file: File, thresholdA: number = 80, thresholdB: number = 95): Promise<ClassifyResponse> {
-  const form = new FormData();
-  form.append('file', file);
-  form.append('threshold_a', String(thresholdA));
-  form.append('threshold_b', String(thresholdB));
-  return fetchJSON<ClassifyResponse>('/classify', { method: 'POST', body: form });
+export interface UploadResult {
+  upload_id: string;
+  filename: string;
+  size_bytes: number;
+  size_mb: number;
+}
+
+export function uploadFile(
+  file: File,
+  onProgress?: (pct: number, loaded: number, total: number) => void
+): Promise<UploadResult> {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append('file', file);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${BASE}/upload`);
+    const headers = auth.getHeaders();
+    for (const [k, v] of Object.entries(headers)) {
+      if (v) xhr.setRequestHeader(k, v as string);
+    }
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress((e.loaded / e.total) * 100, e.loaded, e.total);
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status === 401) { auth.logout(); reject(new Error('Session expired')); return; }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(JSON.parse(xhr.responseText)); }
+        catch { reject(new Error('Bad upload response')); }
+      } else {
+        reject(new Error(xhr.responseText || xhr.statusText || 'Upload failed'));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Network error during upload'));
+    xhr.onabort = () => reject(new Error('Upload aborted'));
+    xhr.send(form);
+  });
+}
+
+export async function deleteUpload(uploadId: string): Promise<void> {
+  await fetchJSON(`/upload/${uploadId}`, { method: 'DELETE' });
+}
+
+export async function classify(uploadId: string, thresholdA: number = 80, thresholdB: number = 95): Promise<ClassifyResponse> {
+  const params = new URLSearchParams({
+    upload_id: uploadId,
+    threshold_a: String(thresholdA),
+    threshold_b: String(thresholdB),
+  });
+  return fetchJSON<ClassifyResponse>(`/classify?${params}`, { method: 'POST' });
 }
 
 export async function getJobs(): Promise<Job[]> {
@@ -49,6 +94,11 @@ export async function exportExcel(jobId: string): Promise<void> {
 
 export async function getHealth(): Promise<HealthResponse> {
   return fetchJSON<HealthResponse>('/health');
+}
+
+export async function getF4Analysis(jobId?: string): Promise<any> {
+  const q = jobId ? `?job_id=${encodeURIComponent(jobId)}` : '';
+  return fetchJSON(`/f4-analysis${q}`);
 }
 
 export async function login(username: string, password: string): Promise<{access_token: string, user: any}> {

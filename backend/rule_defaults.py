@@ -39,6 +39,8 @@ DEFAULT_RULES = {
         "llm_enabled": True,           # use the LLM when an API key is present
         "temperature": 0.3,            # LLM creativity (0 = deterministic, 1 = loose)
         "enrich_top_n": 15,            # per-outlet LLM insight for the top N outlets
+        "chunk_size": 10,              # outlets per parallel chunk in enrich phase
+        "max_concurrent": 5,           # max simultaneous LLM calls (rate-limit guard)
         # NOTE: the model + provider URL are set by the super-admin in Settings,
         # not here — see data/settings.json (llm_model / llm_base_url).
     },

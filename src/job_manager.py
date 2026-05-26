@@ -259,6 +259,7 @@ class JobManager:
         _style_sheet(ws, results_df, "RTM AGENT \u2014 ALL OUTLET RESULTS")
 
         # ── Sheet 2: Overall Summary ──
+        # F4 distributors broken out as own row + Class A (total) rollup added.
         cus_col = "Cus.Code" if "Cus.Code" in results_df.columns else "Cus_Code"
         summary = (
             results_df.groupby("Classification")
@@ -270,6 +271,21 @@ class JobManager:
             summary["TotalSales"] / summary["TotalSales"].sum() * 100
         ).round(2)
         summary_df = summary.reset_index()
+
+        # Add Class A (total) rollup row — sum of all classifications starting with "Class A"
+        class_a_mask = summary_df["Classification"].str.startswith("Class A", na=False)
+        if class_a_mask.sum() > 1:
+            total_count = int(summary_df.loc[class_a_mask, "Count"].sum())
+            total_sales = float(summary_df.loc[class_a_mask, "TotalSales"].sum())
+            rollup = pd.DataFrame([{
+                "Classification": "Class A (total)",
+                "Count": total_count,
+                "TotalSales": round(total_sales, 2),
+                "AvgSales": round(total_sales / total_count, 2) if total_count else 0,
+                "SalesPct": round(total_sales / summary_df["TotalSales"].sum() * 100, 2),
+            }])
+            summary_df = pd.concat([rollup, summary_df], ignore_index=True)
+
         ws = wb.create_sheet("Overall Summary")
         _style_sheet(ws, summary_df, "CLASSIFICATION SUMMARY")
 

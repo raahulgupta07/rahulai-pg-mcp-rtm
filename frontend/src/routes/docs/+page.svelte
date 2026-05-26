@@ -76,7 +76,7 @@
 </div>
 
 <style>
-  .page { max-width: 1100px; margin: 0 auto; }
+  .page { width: 100%; margin: 0; }
   .page-head { margin-bottom: 18px; }
   .page-head h1 { font-size: 24px; }
   .page-head p { margin: 3px 0 0; font-size: 14px; color: var(--text-muted); }

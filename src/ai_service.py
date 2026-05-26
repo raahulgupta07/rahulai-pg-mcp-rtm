@@ -6,10 +6,11 @@ Adds per-outlet AI columns for Excel export.
 
 import os
 import json
+import asyncio
 import requests
 import pandas as pd
 import numpy as np
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Tuple
 
 
 class AIService:
@@ -26,6 +27,8 @@ class AIService:
         self.temperature = 0.3
         self.enrich_top_n = 15
         self.llm_enabled = True
+        self.chunk_size = 10
+        self.max_concurrent = 5
 
     def _settings_path(self) -> str:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -53,6 +56,8 @@ class AIService:
         self.llm_enabled = bool(ai.get("llm_enabled", True))
         self.temperature = ai.get("temperature", 0.3)
         self.enrich_top_n = int(ai.get("enrich_top_n", 15) or 15)
+        self.chunk_size = int(ai.get("chunk_size", 10) or 10)
+        self.max_concurrent = int(ai.get("max_concurrent", 5) or 5)
 
     def is_configured(self) -> bool:
         return bool(self.api_key) and self.llm_enabled
@@ -193,6 +198,196 @@ Provide:
         ) or "Growth analysis not available."
 
     # Legacy method — calls step-by-step methods
+    # ================================================================
+    # ASYNC / PARALLEL VERSIONS — fan-out macro calls + chunked outlets
+    # ================================================================
+
+    async def _call_llm_async(self, system_prompt: str, user_prompt: str,
+                              max_tokens: int = 1000, usage_sink: list = None) -> Optional[str]:
+        """Async wrapper. Offloads the blocking requests call to a thread."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, self._call_llm, system_prompt, user_prompt, max_tokens, usage_sink
+        )
+
+    async def generate_all_insights_parallel(self, results_df: pd.DataFrame,
+                                             usage_sink: list = None) -> Dict[str, str]:
+        """Run the 3 macro insight calls (exec summary, recs, growth) concurrently.
+        Falls back to sequential if LLM not configured (each method handles its own fallback).
+        """
+        loop = asyncio.get_running_loop()
+        # Each generate_* is sync; run all three in the thread pool concurrently.
+        t_exec = loop.run_in_executor(None, self.generate_executive_summary, results_df, usage_sink)
+        t_recs = loop.run_in_executor(None, self.generate_recommendations,   results_df, usage_sink)
+        t_grow = loop.run_in_executor(None, self.generate_growth_analysis,   results_df, usage_sink)
+        exec_text, recs_dict, growth_text = await asyncio.gather(t_exec, t_recs, t_grow)
+        out: Dict[str, str] = {"executive_summary": exec_text or ""}
+        if isinstance(recs_dict, dict):
+            out.update(recs_dict)
+        out["growth_analysis"] = growth_text or ""
+        return out
+
+    async def enrich_outlets_chunked(self, results_df: pd.DataFrame, config: dict = None,
+                                     usage_sink: list = None) -> pd.DataFrame:
+        """Same as enrich_outlets but the top-N per-outlet LLM call is split into
+        parallel chunks. Massive speedup when enrich_top_n > 20.
+
+        Rule-based AI cols (Growth, Risk, Action, Priority) are computed first
+        (sync, fast); only the LLM insight column is chunked.
+        """
+        # Reuse the synchronous enrich_outlets to compute rule-based cols (no LLM yet),
+        # but skip the LLM block by temporarily disabling. Cleaner: replicate the rule-based
+        # part here via the helper, then add LLM separately.
+        df = self.enrich_outlets_rules_only(results_df, config)
+
+        if not self.is_configured() or "Cus.Name" not in df.columns or "TotalSales_2Yr" not in df.columns:
+            df["AI_Insight"] = ""
+            return df
+
+        top_n = max(1, self.enrich_top_n)
+        top_outlets = df.nlargest(top_n, "TotalSales_2Yr")
+        if len(top_outlets) == 0:
+            df["AI_Insight"] = ""
+            return df
+
+        chunk_size = max(1, self.chunk_size)
+        max_concurrent = max(1, self.max_concurrent)
+
+        # Build chunks as lists of (df_index, outlet_dict) — keeps order + traceability
+        items: List[Tuple] = []
+        for idx, r in top_outlets.iterrows():
+            items.append((idx, {
+                "id": str(r.get("Cus.Code", idx)),
+                "code": r.get("Cus.Code", ""),
+                "name": r.get("Cus.Name", ""),
+                "class": r.get("Classification", ""),
+                "sales_2yr": float(r.get("TotalSales_2Yr", 0) or 0),
+                "sales_6m": float(r.get("TotalSales_6M", 0) or 0) if "TotalSales_6M" in df.columns else None,
+                "growth": r.get("AI_Growth_Signal", ""),
+                "frequency": float(r.get("Frequency_2Yr", 0) or 0) if "Frequency_2Yr" in df.columns else None,
+                "wholesaler": bool(r.get("Is_Wholesaler", False)),
+            }))
+
+        chunks = [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
+        sem = asyncio.Semaphore(max_concurrent)
+
+        sys_prompt = (
+            "You are a sales analyst. For each outlet in the input JSON list, write ONE "
+            "specific sentence about their performance and next action. Return a JSON object "
+            "mapping outlet 'id' to insight string. Example: {\"C00123\": \"...\", \"C00124\": \"...\"}. "
+            "No prose, no markdown, JSON only."
+        )
+
+        async def run_chunk(chunk: List[Tuple]) -> Dict[str, str]:
+            async with sem:
+                outlet_list = [o for _, o in chunk]
+                user_prompt = f"Outlets:\n{json.dumps(outlet_list, default=str)}"
+                text = await self._call_llm_async(sys_prompt, user_prompt,
+                                                  max_tokens=200 * len(chunk),
+                                                  usage_sink=usage_sink)
+                if not text:
+                    return {}
+                # Strip ```json fences if model wraps it
+                t = text.strip()
+                if t.startswith("```"):
+                    t = t.strip("`")
+                    if t.startswith("json"):
+                        t = t[4:]
+                    t = t.strip()
+                try:
+                    parsed = json.loads(t)
+                    if isinstance(parsed, dict):
+                        return {str(k): str(v) for k, v in parsed.items()}
+                except Exception:
+                    pass
+                # Fallback: line-by-line position match
+                lines = [l.strip().lstrip("0123456789.-* )").strip()
+                         for l in t.split("\n") if l.strip()]
+                return {o["id"]: lines[i] for i, (_, o) in enumerate(chunk) if i < len(lines)}
+
+        chunk_results = await asyncio.gather(*(run_chunk(c) for c in chunks))
+
+        # Merge — map outlet id → insight back onto the dataframe by Cus.Code
+        insight_map: Dict[str, str] = {}
+        for r in chunk_results:
+            insight_map.update(r)
+
+        df["AI_Insight"] = ""
+        if "Cus.Code" in df.columns:
+            code_col = df["Cus.Code"].astype(str)
+            df["AI_Insight"] = code_col.map(insight_map).fillna("")
+        return df
+
+    def enrich_outlets_rules_only(self, results_df: pd.DataFrame, config: dict = None) -> pd.DataFrame:
+        """Same as enrich_outlets but skips the LLM block. Used by the chunked path."""
+        df = results_df.copy()
+        config = config or {}
+        growth_cfg = config.get("growth") or {}
+        risk_cfg = config.get("risk") or {}
+        grow_mult = 1 + growth_cfg.get("growing_pct", 10) / 100
+        decl_mult = 1 - growth_cfg.get("declining_pct", 10) / 100
+        risk_med_days = risk_cfg.get("freq_medium_days", 30)
+        risk_high_days = risk_cfg.get("freq_high_days", 60)
+        risk_low_purchase = risk_cfg.get("low_purchase_days", 5)
+        signals_high = risk_cfg.get("signals_for_high", 3)
+        signals_medium = risk_cfg.get("signals_for_medium", 1)
+
+        if "TotalSales_12M" in df.columns and "TotalSales_6M" in df.columns:
+            half_12m = df["TotalSales_12M"] / 2
+            df["AI_Growth_Signal"] = np.where(
+                df["TotalSales_6M"] > half_12m * grow_mult, "Growing",
+                np.where(df["TotalSales_6M"] < half_12m * decl_mult, "Declining", "Stable")
+            )
+        elif "TotalSales_2Yr" in df.columns:
+            df["AI_Growth_Signal"] = "N/A"
+
+        def calc_risk(row):
+            signals = 0
+            if row.get("AI_Growth_Signal") == "Declining":
+                signals += 2
+            freq = row.get("Frequency_2Yr", 0)
+            if freq and freq > risk_med_days: signals += 1
+            if freq and freq > risk_high_days: signals += 1
+            days = row.get("PurchaseDays_2Yr", 0)
+            if days and days < risk_low_purchase: signals += 1
+            if signals >= signals_high: return "High"
+            if signals >= signals_medium: return "Medium"
+            return "Low"
+        df["AI_Risk_Level"] = df.apply(calc_risk, axis=1)
+
+        def calc_action(row):
+            cls = str(row.get("Classification", ""))
+            growth = row.get("AI_Growth_Signal", "")
+            risk = row.get("AI_Risk_Level", "")
+            ws = row.get("Is_Wholesaler", False)
+            if ws: return "Maintain bulk pricing; monitor carton volumes monthly"
+            if "Class A" in cls:
+                if growth == "Declining": return "URGENT: Schedule account review; investigate sales drop"
+                if risk == "High": return "Retention risk - assign senior account manager"
+                return "Maintain priority service; quarterly business review"
+            elif "Class B" in cls:
+                if growth == "Growing": return "High potential - increase visit frequency; upsell campaign"
+                if growth == "Declining": return "Monitor closely; run targeted promotion"
+                return "Growth incentive program; monthly check-in"
+            else:
+                if growth == "Growing": return "Emerging outlet - increase engagement; potential upgrade"
+                if risk == "High": return "Review cost-to-serve; consider consolidation"
+                return "Standard service; quarterly viability review"
+        df["AI_Action"] = df.apply(calc_action, axis=1)
+
+        def calc_priority(row):
+            cls = str(row.get("Classification", ""))
+            risk = row.get("AI_Risk_Level", "")
+            growth = row.get("AI_Growth_Signal", "")
+            if "Class A" in cls and risk in ("High", "Medium"): return 1
+            if "Class A" in cls: return 2
+            if "Class B" in cls and growth == "Growing": return 2
+            if "Class B" in cls: return 3
+            if "Class C" in cls and growth == "Growing": return 3
+            return 4
+        df["AI_Visit_Priority"] = df.apply(calc_priority, axis=1)
+        return df
+
     def generate_all_insights(self, results_df: pd.DataFrame) -> Dict[str, str]:
         """Calls each insight step individually. Used as batch fallback."""
         insights = {}

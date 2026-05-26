@@ -8,10 +8,25 @@ DEFAULT_DOCS = [
         "markdown": """## Classification Rules
 
 Outlets are graded **Class A / B / C** by a per-branch Pareto split, with
-**F4** wholesalers and category leaders promoted to Class A.
+**F4 distributors** (a.k.a. F4 wholesalers) and category leaders promoted
+to Class A.
+
+### Class A is composed of three sub-types
+
+| Sub-class | Rule | Visit |
+|-----------|------|-------|
+| **F4 Distributor** | ≥ N cartons/brand/month of `Local` items (default N = 3) | F4 |
+| **Class A (category)** | Outlet contributes ≥ 80 % of any single item category in its branch | F4 |
+| **Pure Class A** | Cumulative revenue rank within the branch ≤ 80 % | F4 |
+
+F4 distributors are **the most important sub-type** — they're treated as
+forced-A regardless of Pareto rank because they buy in distributor-scale
+volumes. They appear in the **Classification Summary** as their own row,
+get a dedicated KPI card on the Classify dashboard, and have a filter
+chip on the RTM Data page.
 
 > **These rules are live and configurable.** Open the **Rules** page — every
-> parameter (Pareto cut-offs, wholesaler threshold, category override) shows
+> parameter (Pareto cut-offs, F4 carton threshold, category override) shows
 > exactly how it works and the impact of changing it. Changes are
 > version-tracked and apply to the next classification run.
 """,

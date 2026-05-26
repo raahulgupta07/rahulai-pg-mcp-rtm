@@ -146,8 +146,9 @@ class RTMClassifier:
             "Outlet Channel": "first",
         }
 
-        # Add extra columns if present (incl. geo — Latitude/Longitude/Township)
-        extra_cols = ["Channel", "GroupName", "Latitude", "Longitude", "Township"]
+        # Add extra columns if present (incl. geo + contact)
+        extra_cols = ["Channel", "GroupName", "Latitude", "Longitude", "Township",
+                      "CntctPrsn", "Address", "Phone1"]
         for col in extra_cols:
             if col in self.sales.columns:
                 agg_dict[col] = "first"
@@ -462,6 +463,47 @@ class RTMClassifier:
         else:
             self.route_workload = None
             print("  RouteCode not found — skipping workload analysis")
+
+        # ── Lifecycle stage ──
+        # New        : first purchase within last 3M
+        # Reactivated: gap > 6M between sales then bought in last 3M
+        # Active     : bought in last 3M (not New / Reactivated)
+        # Dormant    : last purchase 3-12M ago
+        # Lost       : last purchase > 12M ago
+        if self.has_docdate and "FirstPurchaseDate" in df.columns and "LastPurchaseDate" in df.columns:
+            ref = self.max_date
+            three_m = ref - pd.DateOffset(months=3)
+            six_m = ref - pd.DateOffset(months=6)
+            twelve_m = ref - pd.DateOffset(months=12)
+
+            first = pd.to_datetime(df["FirstPurchaseDate"], errors="coerce")
+            last = pd.to_datetime(df["LastPurchaseDate"], errors="coerce")
+            span_months = ((last - first).dt.days / 30).fillna(0)
+
+            def life(row_idx):
+                f = first.iloc[row_idx]
+                l = last.iloc[row_idx]
+                if pd.isna(l):
+                    return "Unknown"
+                if l < twelve_m:
+                    return "Lost"
+                if l < three_m:
+                    return "Dormant"
+                # bought within last 3M
+                if not pd.isna(f) and f >= three_m:
+                    return "New"
+                # bought recently but has older history with a gap — reactivated heuristic:
+                # span > 6M AND recent purchase implies it was inactive then returned
+                if span_months.iloc[row_idx] > 6:
+                    # only call reactivated if a true gap likely existed (first purchase old, recent buy)
+                    return "Reactivated"
+                return "Active"
+
+            df["Lifecycle_Stage"] = [life(i) for i in range(len(df))]
+            stage_counts = df["Lifecycle_Stage"].value_counts().to_dict()
+            print(f"Lifecycle stages: {stage_counts}")
+        else:
+            df["Lifecycle_Stage"] = "Unknown"
 
         self.results = df
 

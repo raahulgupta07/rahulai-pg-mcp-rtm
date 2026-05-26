@@ -8,6 +8,7 @@ import sys
 import os
 import io
 import json
+import asyncio
 
 # Add project root so we can import from src/
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -29,6 +30,12 @@ from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 import pandas as pd
 import numpy as np
+
+import uuid
+import re
+from pathlib import Path
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "/app/uploads"))
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 from src.rtm_classifier import RTMClassifier
 from src.database import get_database
@@ -260,11 +267,67 @@ async def set_user_groups_ep(user_id: int, body: dict, user: dict = Depends(requ
 
 
 # ──────────────────────────────────────────────
+# POST /api/upload — stream a CSV to local disk, return an upload_id.
+# Decouples slow upload from classification. Cleanup happens after /classify
+# completes (or via explicit DELETE).
+# ──────────────────────────────────────────────
+def _safe_filename(name: str) -> str:
+    name = (name or "upload.csv").split("/")[-1].split("\\")[-1]
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    return name[:200] or "upload.csv"
+
+
+def _find_upload(upload_id: str) -> Path | None:
+    if not re.fullmatch(r"[a-f0-9]{32}", upload_id):
+        return None
+    matches = list(UPLOAD_DIR.glob(f"{upload_id}_*"))
+    return matches[0] if matches else None
+
+
+@app.post("/api/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    user: dict = Depends(require_auth),
+):
+    """Stream the file to /app/uploads/{id}_{name}. Never holds full file in RAM."""
+    upload_id = uuid.uuid4().hex
+    safe_name = _safe_filename(file.filename or "upload.csv")
+    dest = UPLOAD_DIR / f"{upload_id}_{safe_name}"
+    size = 0
+    try:
+        with dest.open("wb") as out:
+            while True:
+                chunk = await file.read(8 * 1024 * 1024)  # 8 MB
+                if not chunk:
+                    break
+                out.write(chunk)
+                size += len(chunk)
+    except Exception as e:
+        if dest.exists():
+            dest.unlink()
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+    return {
+        "upload_id": upload_id,
+        "filename": safe_name,
+        "size_bytes": size,
+        "size_mb": round(size / (1024 * 1024), 2),
+    }
+
+
+@app.delete("/api/upload/{upload_id}")
+async def delete_upload(upload_id: str, user: dict = Depends(require_auth)):
+    path = _find_upload(upload_id)
+    if path and path.exists():
+        path.unlink()
+    return {"ok": True}
+
+
 # POST /api/classify
 # ──────────────────────────────────────────────
 @app.post("/api/classify")
 async def classify(
-    file: UploadFile = File(...),
+    upload_id: str = Query(None, description="Use prior /api/upload result"),
+    file: UploadFile = File(None),
     threshold_a: int = Query(80, ge=50, le=95),
     threshold_b: int = Query(95, ge=55, le=99),
     user: dict = Depends(require_auth),
@@ -275,19 +338,39 @@ async def classify(
     """
     log: list[str] = []
 
-    # 1. Read the uploaded CSV with encoding fallbacks
+    # 1. Resolve input — either staged upload (preferred) or legacy direct file
+    upload_path: Path | None = None
+    if upload_id:
+        upload_path = _find_upload(upload_id)
+        if not upload_path:
+            raise HTTPException(status_code=404, detail=f"upload_id {upload_id} not found")
+        source_name = upload_path.name.split("_", 1)[1] if "_" in upload_path.name else upload_path.name
+        log.append(f"$ rtm-agent classify --from-upload {upload_id[:8]}")
+        log.append(f"[INFO] Source: {source_name} ({upload_path.stat().st_size / (1024*1024):.1f} MB on disk)")
+    elif file:
+        source_name = file.filename or "upload.csv"
+        log.append("$ rtm-agent upload --parse-csv (legacy direct upload)")
+    else:
+        raise HTTPException(status_code=400, detail="Provide upload_id or file")
+
     log.append("$ rtm-agent upload --parse-csv")
-    raw_bytes = await file.read()
     sales_df = None
     for encoding in ("utf-8", "latin-1", "cp1252"):
         try:
-            sales_df = pd.read_csv(io.BytesIO(raw_bytes), encoding=encoding, low_memory=False)
+            if upload_path:
+                sales_df = pd.read_csv(upload_path, encoding=encoding, low_memory=False)
+            else:
+                raw_bytes = await file.read()
+                sales_df = pd.read_csv(io.BytesIO(raw_bytes), encoding=encoding, low_memory=False)
             log.append(f"[OK] CSV parsed ({encoding}): {len(sales_df):,} rows, {len(sales_df.columns)} columns")
             break
         except (UnicodeDecodeError, pd.errors.ParserError):
             continue
 
     if sales_df is None:
+        # cleanup staged file on parse failure
+        if upload_path and upload_path.exists():
+            upload_path.unlink()
         raise HTTPException(status_code=400, detail="Could not parse CSV with any supported encoding (utf-8, latin-1, cp1252)")
 
     # Validate required columns
@@ -319,7 +402,7 @@ async def classify(
     # 2. Start a job
     job_manager = get_job_manager()
     job_id = job_manager.start_job(
-        sales_filename=file.filename or "upload.csv",
+        sales_filename=source_name,
         customer_filename="",
         item_filename="",
         threshold_a=threshold_a,
@@ -346,32 +429,30 @@ async def classify(
         ws_col_count = int(results_df["Is_Wholesaler"].sum()) if "Is_Wholesaler" in results_df.columns else 0
         log.append(f"[INFO] Wholesalers detected: {ws_col_count}")
 
-        # 4. AI enrichment (per-outlet columns)
-        log.append("$ rtm-agent enrich --ai-rules")
+        # 4. AI enrichment + insights — parallelized
+        # ──────────────────────────────────────────
+        # Strategy: fan out independent LLM calls concurrently.
+        #   - 3 macro insight calls (exec / recs / growth) run in parallel
+        #   - per-outlet enrichment splits top-N into chunks, fired in parallel
+        #     (gated by ai.max_concurrent semaphore)
+        #   - both batches gathered together so total elapsed ≈ max() not sum()
+        import time as _time
+        ai_t0 = _time.time()
+        log.append("$ rtm-agent enrich --parallel --chunked")
         ai_service = get_ai_service()
         ai_service.apply_config(rule_cfg)
-        usage_sink: list = []   # collects OpenRouter token + cost usage for this run
-        results_df = await run_in_threadpool(ai_service.enrich_outlets, results_df, rule_cfg, usage_sink)
+        usage_sink: list = []
+
+        enrich_task = ai_service.enrich_outlets_chunked(results_df, rule_cfg, usage_sink)
+        insights_task = ai_service.generate_all_insights_parallel(results_df, usage_sink)
+        results_df, insights = await asyncio.gather(enrich_task, insights_task)
+        ai_elapsed = _time.time() - ai_t0
+
         if "AI_Growth_Signal" in results_df.columns:
             for signal, cnt in results_df["AI_Growth_Signal"].value_counts().items():
                 log.append(f"[AI] {signal}: {cnt:,} outlets")
-        log.append("[OK] AI enrichment complete")
-
-        # 5. AI insights (step by step)
-        insights = {}
-
-        log.append("$ rtm-agent insights --step executive-summary")
-        insights["executive_summary"] = await run_in_threadpool(ai_service.generate_executive_summary, results_df, usage_sink)
-        log.append("[OK] Executive summary generated")
-
-        log.append("$ rtm-agent insights --step recommendations")
-        recs = await run_in_threadpool(ai_service.generate_recommendations, results_df, usage_sink)
-        insights.update(recs)
-        log.append("[OK] Class A/B/C recommendations generated")
-
-        log.append("$ rtm-agent insights --step growth-analysis")
-        insights["growth_analysis"] = await run_in_threadpool(ai_service.generate_growth_analysis, results_df, usage_sink)
-        log.append("[OK] Growth analysis generated")
+        n_chunks = (max(1, ai_service.enrich_top_n) + ai_service.chunk_size - 1) // ai_service.chunk_size
+        log.append(f"[OK] AI complete — 3 macro calls + {n_chunks} outlet chunks (max {ai_service.max_concurrent} concurrent) in {ai_elapsed:.1f}s")
 
         # 5b. Workload data
         workload = []
@@ -404,12 +485,39 @@ async def classify(
         db = get_database()
         db.log_action(user["username"], "CLASSIFY", f"Job {job_id}: {len(results_df)} outlets, {n_branches} branches")
 
-        # 8. Compute summary counts
+        # 8. Compute summary counts — F4 broken out as first-class metric.
+        # Class A breakdown:
+        #   - class_a_pure : exactly "Class A" (Pareto-ranked, no special rule)
+        #   - class_a_f4   : "Class A Local (F4)" — forced-A wholesaler/distributor
+        #   - class_a_cat  : "Class A {Nutrition/Food/Non Food}" — category override
+        #   - class_a      : sum of all above (legacy field kept for back-compat)
         class_counts = results_df["Classification"].value_counts().to_dict()
-        class_a = class_counts.get("Class A", 0) + class_counts.get("Class A Local (F4)", 0)
-        class_a += sum(v for k, v in class_counts.items() if k.startswith("Class A") and k not in ("Class A", "Class A Local (F4)"))
-        class_b = class_counts.get("Class B", 0)
-        class_c = class_counts.get("Class C", 0)
+        rev_by_cls: dict = {}
+        if "TotalSales_2Yr" in results_df.columns:
+            rev_by_cls = results_df.groupby("Classification")["TotalSales_2Yr"].sum().to_dict()
+
+        def _r(label: str) -> float:
+            v = rev_by_cls.get(label, 0)
+            try:
+                return float(v) if v is not None else 0.0
+            except Exception:
+                return 0.0
+
+        class_a_pure = int(class_counts.get("Class A", 0))
+        class_a_f4 = int(class_counts.get("Class A Local (F4)", 0))
+        class_a_cat = int(sum(v for k, v in class_counts.items()
+                              if k.startswith("Class A") and k not in ("Class A", "Class A Local (F4)")))
+        class_a = class_a_pure + class_a_f4 + class_a_cat
+        class_b = int(class_counts.get("Class B", 0))
+        class_c = int(class_counts.get("Class C", 0))
+
+        rev_a_pure = _r("Class A")
+        rev_a_f4 = _r("Class A Local (F4)")
+        rev_a_cat = sum(_r(k) for k in class_counts if k.startswith("Class A") and k not in ("Class A", "Class A Local (F4)"))
+        rev_a = rev_a_pure + rev_a_f4 + rev_a_cat
+        rev_b = _r("Class B")
+        rev_c = _r("Class C")
+
         total_revenue = float(results_df["TotalSales_2Yr"].sum()) if "TotalSales_2Yr" in results_df.columns else 0.0
         branches = int(results_df["BranchName"].nunique()) if "BranchName" in results_df.columns else 0
 
@@ -527,10 +635,20 @@ async def classify(
             "total_outlets": len(results_df),
             "branches": branches,
             "class_a": class_a,
+            "class_a_pure": class_a_pure,
+            "class_a_f4": class_a_f4,
+            "class_a_cat": class_a_cat,
             "class_b": class_b,
             "class_c": class_c,
+            "f4_count": class_a_f4,
             "wholesalers": ws_count,
             "revenue": total_revenue,
+            "rev_a": rev_a,
+            "rev_a_pure": rev_a_pure,
+            "rev_a_f4": rev_a_f4,
+            "rev_a_cat": rev_a_cat,
+            "rev_b": rev_b,
+            "rev_c": rev_c,
             "results": results_records,
             "workload": workload,
             "branch_summary": branch_summary,
@@ -547,6 +665,13 @@ async def classify(
     except Exception as e:
         job_manager.fail_job(job_id, str(e))
         raise HTTPException(status_code=500, detail=f"Classification failed: {str(e)}")
+    finally:
+        # Clean up staged upload after processing (success or failure)
+        if upload_path and upload_path.exists():
+            try:
+                upload_path.unlink()
+            except Exception:
+                pass
 
 
 # ──────────────────────────────────────────────
@@ -794,6 +919,125 @@ async def update_settings(body: dict, user: dict = Depends(require_super_admin))
 
 
 # ──────────────────────────────────────────────
+# GET /api/f4-analysis
+# ──────────────────────────────────────────────
+@app.get("/api/f4-analysis")
+def f4_analysis(
+    job_id: str = Query(None),
+    user: dict = Depends(require_auth),
+):
+    """F4 distributor deep-dive — health, churn risk, leaderboard, per-branch breakdown."""
+    db = get_database()
+    if not job_id:
+        jobs = db.get_all_jobs(limit=1)
+        if not jobs:
+            return JSONResponse(content={"job_id": None, "f4_count": 0, "f4_outlets": [],
+                                         "by_branch": [], "top10": [], "churn_risk": []})
+        job_id = jobs[0]["job_id"]
+
+    df = db.get_job_results(job_id)
+    if df.empty:
+        raise HTTPException(status_code=404, detail="job not found")
+
+    # Detect F4 — Classification contains F4 OR Is_Wholesaler flag
+    cls_col = "Classification"
+    is_f4 = df[cls_col].astype(str).str.contains("F4", case=False, na=False)
+    if "Is_Wholesaler" in df.columns:
+        is_f4 = is_f4 | df["Is_Wholesaler"].fillna(False).astype(bool)
+    f4_df = df[is_f4].copy()
+
+    code_col = "Cus.Code" if "Cus.Code" in df.columns else "Cus_Code"
+    name_col = "Cus.Name" if "Cus.Name" in df.columns else "Cus_Name"
+    branch_col = "BranchName" if "BranchName" in df.columns else "Branch"
+
+    def _f(v):
+        try:
+            v = float(v) if v is not None else 0.0
+            return v if not (pd.isna(v) or pd.isinf(v)) else 0.0
+        except Exception:
+            return 0.0
+
+    # Per-branch breakdown
+    by_branch = []
+    if branch_col in df.columns:
+        for branch in sorted(df[branch_col].dropna().unique()):
+            b_all = df[df[branch_col] == branch]
+            b_f4 = f4_df[f4_df[branch_col] == branch]
+            by_branch.append({
+                "branch": str(branch),
+                "total_outlets": int(len(b_all)),
+                "f4_count": int(len(b_f4)),
+                "f4_pct": round(len(b_f4) / max(1, len(b_all)) * 100, 1),
+                "f4_revenue": _f(b_f4["TotalSales_2Yr"].sum()) if "TotalSales_2Yr" in b_f4.columns else 0.0,
+                "branch_revenue": _f(b_all["TotalSales_2Yr"].sum()) if "TotalSales_2Yr" in b_all.columns else 0.0,
+            })
+        for b in by_branch:
+            b["revenue_share"] = round((b["f4_revenue"] / b["branch_revenue"] * 100) if b["branch_revenue"] else 0.0, 1)
+
+    # Top-10 by revenue
+    top10 = []
+    if not f4_df.empty and "TotalSales_2Yr" in f4_df.columns:
+        for _, r in f4_df.nlargest(10, "TotalSales_2Yr").iterrows():
+            top10.append({
+                "code": str(r.get(code_col, "")),
+                "name": str(r.get(name_col, "")),
+                "branch": str(r.get(branch_col, "")),
+                "revenue_2yr": _f(r.get("TotalSales_2Yr", 0)),
+                "revenue_6m": _f(r.get("TotalSales_6M", 0)),
+                "revenue_3m": _f(r.get("TotalSales_3M", 0)),
+                "growth": str(r.get("AI_Growth_Signal", "")),
+                "risk": str(r.get("AI_Risk_Level", "")),
+            })
+
+    # Churn-risk F4 — Declining growth OR High risk
+    churn = []
+    if not f4_df.empty:
+        risk_df = f4_df.copy()
+        risk_mask = (
+            risk_df.get("AI_Growth_Signal", pd.Series([""] * len(risk_df))).astype(str).eq("Declining") |
+            risk_df.get("AI_Risk_Level", pd.Series([""] * len(risk_df))).astype(str).eq("High")
+        )
+        risk_df = risk_df[risk_mask]
+        if "TotalSales_2Yr" in risk_df.columns:
+            risk_df = risk_df.sort_values("TotalSales_2Yr", ascending=False).head(20)
+        for _, r in risk_df.iterrows():
+            churn.append({
+                "code": str(r.get(code_col, "")),
+                "name": str(r.get(name_col, "")),
+                "branch": str(r.get(branch_col, "")),
+                "revenue_2yr": _f(r.get("TotalSales_2Yr", 0)),
+                "revenue_6m": _f(r.get("TotalSales_6M", 0)),
+                "growth": str(r.get("AI_Growth_Signal", "")),
+                "risk": str(r.get("AI_Risk_Level", "")),
+                "lifecycle": str(r.get("Lifecycle_Stage", "")),
+            })
+
+    # Overall health metrics
+    total_f4 = int(len(f4_df))
+    declining = int((f4_df.get("AI_Growth_Signal", pd.Series(dtype=str)) == "Declining").sum()) if not f4_df.empty else 0
+    growing = int((f4_df.get("AI_Growth_Signal", pd.Series(dtype=str)) == "Growing").sum()) if not f4_df.empty else 0
+    high_risk = int((f4_df.get("AI_Risk_Level", pd.Series(dtype=str)) == "High").sum()) if not f4_df.empty else 0
+    f4_revenue = _f(f4_df["TotalSales_2Yr"].sum()) if not f4_df.empty and "TotalSales_2Yr" in f4_df.columns else 0.0
+    total_revenue = _f(df["TotalSales_2Yr"].sum()) if "TotalSales_2Yr" in df.columns else 0.0
+    health_score = max(0, 100 - (declining / max(1, total_f4) * 50) - (high_risk / max(1, total_f4) * 30))
+
+    return JSONResponse(content={
+        "job_id": job_id,
+        "f4_count": total_f4,
+        "f4_revenue": f4_revenue,
+        "total_revenue": total_revenue,
+        "revenue_share_pct": round((f4_revenue / total_revenue * 100) if total_revenue else 0, 1),
+        "growing": growing,
+        "declining": declining,
+        "high_risk": high_risk,
+        "health_score": round(health_score, 1),
+        "by_branch": by_branch,
+        "top10": top10,
+        "churn_risk": churn,
+    })
+
+
+# ──────────────────────────────────────────────
 # GET /api/rtm-data
 # ──────────────────────────────────────────────
 @app.get("/api/rtm-data")
@@ -957,6 +1201,9 @@ def get_coverage(
             'lat': float(lat) if valid else None,
             'lng': float(lng) if valid else None,
             'revenue': float(r.get('TotalSales_2Yr', 0) or 0),
+            'contact': str(r.get('CntctPrsn', '') or '') if 'CntctPrsn' in results_df.columns else '',
+            'phone': str(r.get('Phone1', '') or '') if 'Phone1' in results_df.columns else '',
+            'address': str(r.get('Address', '') or '') if 'Address' in results_df.columns else '',
         })
 
     township_summary: dict = {}

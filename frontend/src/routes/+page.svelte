@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { classify, exportExcel, getJob, getJobComparison, getSettings } from '$lib/api';
+  import { classify, exportExcel, getJob, getJobComparison, getSettings, uploadFile, deleteUpload, getF4Analysis } from '$lib/api';
   import { page } from '$app/stores';
   import KpiCard from '$lib/components/KpiCard.svelte';
   import DataTable from '$lib/components/DataTable.svelte';
@@ -9,6 +9,114 @@
   let state = $state('upload');
   let file = $state(null);
   let fileError = $state('');
+  let preview = $state<null | {
+    headers: string[];
+    rows: string[][];
+    totalRows: number;
+    branches: { name: string; count: number }[];
+    outletCount: number;
+    dateRange: string;
+    requiredMissing: string[];
+    optionalPresent: string[];
+    sampled: boolean;
+  }>(null);
+
+  const REQUIRED_COLS = ['Cus.Code', 'Cus.Name', 'TotalAmount', 'TotalPcs', 'BranchName', 'Item Type', 'Item Class', 'NumInBuy'];
+  const OPTIONAL_COLS = ['DocDate', 'InvoiceNo', 'BrandName', 'Outlet Channel', 'Channel', 'GroupName', 'RouteCode'];
+
+  function parseCsvLine(line: string): string[] {
+    const out: string[] = [];
+    let cur = '';
+    let inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (inQ) {
+        if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+        else if (ch === '"') { inQ = false; }
+        else { cur += ch; }
+      } else {
+        if (ch === '"') inQ = true;
+        else if (ch === ',') { out.push(cur); cur = ''; }
+        else cur += ch;
+      }
+    }
+    out.push(cur);
+    return out.map(s => s.trim());
+  }
+
+  async function buildPreview(f: File) {
+    preview = null;
+    try {
+      // Slice first 8 MB to keep parse fast on huge files
+      const SLICE = 8 * 1024 * 1024;
+      const isSliced = f.size > SLICE;
+      const blob = isSliced ? f.slice(0, SLICE) : f;
+      const buf = await blob.arrayBuffer();
+      // Try UTF-8 strict first; if it fails, fall back through cp1252 / latin-1.
+      // Matches backend encoding fallback order so preview matches stored data.
+      let text = '';
+      const encodings = ['utf-8', 'windows-1252', 'iso-8859-1'];
+      for (const enc of encodings) {
+        try {
+          text = new TextDecoder(enc, { fatal: enc === 'utf-8' }).decode(buf);
+          break;
+        } catch {
+          // try next
+        }
+      }
+      if (!text) text = new TextDecoder('utf-8').decode(buf);
+      // If sliced, drop last partial line
+      const allLines = text.split(/\r?\n/);
+      const lines = isSliced ? allLines.slice(0, -1).filter(l => l.length > 0) : allLines.filter(l => l.length > 0);
+      if (lines.length < 2) return;
+      const headers = parseCsvLine(lines[0]);
+      const dataLines = lines.slice(1);
+      const sample = dataLines.slice(0, 10).map(parseCsvLine);
+
+      const idx = (name: string) => headers.indexOf(name);
+      const iBranch = idx('BranchName');
+      const iCode = idx('Cus.Code');
+      const iDate = idx('DocDate');
+
+      const branchMap = new Map<string, number>();
+      const outletSet = new Set<string>();
+      let minDate = '', maxDate = '';
+      for (const line of dataLines) {
+        const row = parseCsvLine(line);
+        if (iBranch >= 0) {
+          const b = row[iBranch] || '(none)';
+          branchMap.set(b, (branchMap.get(b) || 0) + 1);
+        }
+        if (iCode >= 0 && iBranch >= 0) outletSet.add(`${row[iBranch]}|${row[iCode]}`);
+        if (iDate >= 0 && row[iDate]) {
+          const d = row[iDate];
+          if (!minDate || d < minDate) minDate = d;
+          if (!maxDate || d > maxDate) maxDate = d;
+        }
+      }
+
+      // Estimate total rows from full file size if sliced
+      const scale = isSliced ? f.size / SLICE : 1;
+      const branches = [...branchMap.entries()]
+        .map(([name, count]) => ({ name, count: Math.round(count * scale) }))
+        .sort((a, b) => b.count - a.count);
+
+      preview = {
+        headers,
+        rows: sample,
+        totalRows: Math.round(dataLines.length * scale),
+        branches,
+        outletCount: Math.round(outletSet.size * scale),
+        dateRange: minDate && maxDate ? (minDate === maxDate ? minDate : `${minDate} → ${maxDate}`) : '—',
+        requiredMissing: REQUIRED_COLS.filter(c => !headers.includes(c)),
+        optionalPresent: OPTIONAL_COLS.filter(c => headers.includes(c)),
+        sampled: isSliced,
+      };
+    } catch (e) {
+      console.warn('preview parse failed', e);
+      fileError = 'Could not parse CSV preview — file may be corrupted or wrong encoding';
+    }
+  }
   let thresholdA = $state(80);
   let thresholdB = $state(95);
   let data = $state(null);
@@ -39,6 +147,21 @@
   let classFilter = $state('All');
   let currentStep = $state(0);
   let terminalLines = $state<string[]>([]);
+  let uploadPct = $state(0);
+  let uploadLoaded = $state(0);
+  let uploadTotal = $state(0);
+  let uploadId = $state<string | null>(null);
+  let f4Data = $state<any | null>(null);
+
+  // Lifecycle counts derived from results
+  let lifecycle = $derived(() => {
+    const buckets: Record<string, number> = { New: 0, Active: 0, Reactivated: 0, Dormant: 0, Lost: 0, Unknown: 0 };
+    for (const r of filteredResults) {
+      const s = r.Lifecycle_Stage || 'Unknown';
+      buckets[s] = (buckets[s] || 0) + 1;
+    }
+    return buckets;
+  });
 
   const terminalMessages: string[][] = [
     [
@@ -206,6 +329,8 @@
       // Fetch comparison without blocking the main render
       comparison = null;
       getJobComparison(jobId).then(c => { comparison = c; }).catch(() => {});
+      f4Data = null;
+      getF4Analysis(jobId).then(r => f4Data = r).catch(() => f4Data = null);
       await new Promise(r => setTimeout(r, 800));
       state = 'results';
     } catch (e: any) {
@@ -228,11 +353,14 @@
   // KPIs from filtered results
   let kpis = $derived({
     total: filteredResults.length,
-    classA: filteredResults.filter(r => r.Classification?.includes('Class A')).length,
+    classA: filteredResults.filter(r => r.Classification?.startsWith('Class A')).length,
+    classA_pure: filteredResults.filter(r => r.Classification === 'Class A').length,
+    classA_f4: filteredResults.filter(r => /F4/i.test(r.Classification || '')).length,
     classB: filteredResults.filter(r => r.Classification === 'Class B').length,
     classC: filteredResults.filter(r => r.Classification === 'Class C').length,
     wholesalers: filteredResults.filter(r => r.Is_Wholesaler).length,
     revenue: filteredResults.reduce((s, r) => s + (r.TotalSales_2Yr || 0), 0),
+    revA_f4: filteredResults.filter(r => /F4/i.test(r.Classification || '')).reduce((s, r) => s + (r.TotalSales_2Yr || 0), 0),
     branchCount: new Set(filteredResults.map(r => r.BranchName)).size,
   });
 
@@ -291,10 +419,36 @@
 
   async function handleClassify() {
     if (!file) return;
+    error = '';
+
+    // ─── Stage 1: upload file to app disk ───
+    state = 'uploading';
+    uploadPct = 0;
+    uploadLoaded = 0;
+    uploadTotal = file.size;
+    let uploaded;
+    try {
+      uploaded = await uploadFile(file, (pct, loaded, total) => {
+        uploadPct = pct;
+        uploadLoaded = loaded;
+        uploadTotal = total;
+      });
+      uploadId = uploaded.upload_id;
+    } catch (e: any) {
+      error = `Upload failed: ${e.message || e}`;
+      state = 'upload';
+      return;
+    }
+
+    // ─── Stage 2: classify from staged file ───
     state = 'processing';
     currentStep = 0;
-    terminalLines = ['[RTM AGENT] Pipeline initiated...', `[RTM AGENT] File: ${file.name} (${(file.size/1024).toFixed(0)} KB)`, ''];
-    error = '';
+    terminalLines = [
+      '[RTM AGENT] Pipeline initiated...',
+      `[RTM AGENT] File: ${file.name} (${(file.size/1024/1024).toFixed(2)} MB) → staged on disk`,
+      `[RTM AGENT] Upload ID: ${uploaded.upload_id.slice(0, 8)}...`,
+      ''
+    ];
 
     // Type terminal lines one by one with realistic timing
     let stepLineIdx = 0;
@@ -331,7 +485,7 @@
     const typeInterval = 0; // unused, kept for clearInterval compat
 
     try {
-      data = await classify(file, thresholdA, thresholdB);
+      data = await classify(uploaded.upload_id, thresholdA, thresholdB);
       clearInterval(stepInterval);
       clearInterval(typeInterval);
       comparison = data.comparison ?? null;
@@ -356,6 +510,10 @@
       currentStep = 10;
       await new Promise(r => setTimeout(r, 1500));
       state = 'results';
+      // Kick off F4 deep-dive fetch in background
+      if (data?.job_id) {
+        getF4Analysis(data.job_id).then(r => f4Data = r).catch(() => f4Data = null);
+      }
     } catch (e: any) {
       clearInterval(stepInterval);
       clearInterval(typeInterval);
@@ -378,19 +536,21 @@
       input.value = '';
       return;
     }
-    // Validate: max 100MB
-    if (selected.size > 100 * 1024 * 1024) {
-      fileError = 'File too large — maximum 100MB';
+    // Validate: max 2 GB (staged to disk, then processed)
+    if (selected.size > 2 * 1024 * 1024 * 1024) {
+      fileError = `File too large — ${(selected.size / 1024 / 1024 / 1024).toFixed(2)} GB exceeds 2 GB limit`;
       file = null;
       input.value = '';
       return;
     }
     file = selected;
+    buildPreview(selected);
   }
 
   function reset() {
     state = 'upload';
     file = null;
+    preview = null;
     data = null;
     comparison = null;
     error = '';
@@ -406,14 +566,25 @@
     if (!filteredResults.length) return [];
     const totalRev = filteredResults.reduce((s, r) => s + (r.TotalSales_2Yr || 0), 0);
 
-    const classA = filteredResults.filter(r => (r.Classification || '').startsWith('Class A'));
+    const classA_pure = filteredResults.filter(r => r.Classification === 'Class A');
+    const classA_f4 = filteredResults.filter(r => /F4/i.test(r.Classification || ''));
+    const classA_cat = filteredResults.filter(r => {
+      const c = r.Classification || '';
+      return c.startsWith('Class A') && c !== 'Class A' && !/F4/i.test(c);
+    });
+    const classA_all = filteredResults.filter(r => (r.Classification || '').startsWith('Class A'));
     const classB = filteredResults.filter(r => r.Classification === 'Class B');
     const classC = filteredResults.filter(r => r.Classification === 'Class C');
 
+    const rev = (arr: any[]) => arr.reduce((s, r) => s + (r.TotalSales_2Yr || 0), 0);
+
     return [
-      { Classification: 'Class A', Count: classA.length, Revenue: classA.reduce((s, r) => s + (r.TotalSales_2Yr || 0), 0) },
-      { Classification: 'Class B', Count: classB.length, Revenue: classB.reduce((s, r) => s + (r.TotalSales_2Yr || 0), 0) },
-      { Classification: 'Class C', Count: classC.length, Revenue: classC.reduce((s, r) => s + (r.TotalSales_2Yr || 0), 0) },
+      { Classification: 'Class A (total)', Count: classA_all.length, Revenue: rev(classA_all) },
+      { Classification: '  ↳ Pure Class A', Count: classA_pure.length, Revenue: rev(classA_pure) },
+      { Classification: '  ↳ F4 Distributor', Count: classA_f4.length, Revenue: rev(classA_f4) },
+      { Classification: '  ↳ Class A (category)', Count: classA_cat.length, Revenue: rev(classA_cat) },
+      { Classification: 'Class B', Count: classB.length, Revenue: rev(classB) },
+      { Classification: 'Class C', Count: classC.length, Revenue: rev(classC) },
     ].filter(r => r.Count > 0).map(row => ({
       Classification: row.Classification,
       Count: row.Count.toLocaleString(),
@@ -676,6 +847,10 @@
     <!-- File upload card -->
     <div class="card upload-card">
 
+      {#if fileError}
+        <div class="alert alert-danger" style="margin-bottom:12px;">{fileError}</div>
+      {/if}
+
       {#if !file}
         <!-- Empty state: clickable upload area -->
         <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -696,13 +871,13 @@
             <div class="file-check">✓</div>
             <div>
               <div class="file-name">{file.name}</div>
-              <div class="file-meta">{(file.size / 1024).toFixed(0)} KB · CSV file</div>
+              <div class="file-meta">{file.size > 1024 * 1024 ? (file.size / 1024 / 1024).toFixed(1) + ' MB' : (file.size / 1024).toFixed(0) + ' KB'} · CSV file</div>
             </div>
           </div>
           <button
             class="btn-danger btn-sm file-remove"
             aria-label="Remove file"
-            onclick={() => { file = null; fileError = ''; const el = document.getElementById('fileInput'); if (el) el.value = ''; }}
+            onclick={() => { file = null; preview = null; fileError = ''; const el = document.getElementById('fileInput'); if (el) (el as HTMLInputElement).value = ''; }}
           >✕</button>
         </div>
 
@@ -734,10 +909,116 @@
       {/if}
 
       <!-- CTA Button -->
-      <button class="btn btn-block run-btn" onclick={handleClassify} disabled={!file}>
+      <button class="btn btn-block run-btn" onclick={handleClassify} disabled={!file || (preview && preview.requiredMissing.length > 0)}>
         Run Classification
       </button>
     </div>
+
+    <!-- File Preview Panel -->
+    {#if file && preview}
+      <div class="card preview-panel animate-fade-up">
+        <div class="card-head">
+          <div class="card-head-title">File Preview</div>
+          <div class="card-head-sub">{file.name} · {file.size > 1024 * 1024 ? (file.size / 1024 / 1024).toFixed(1) + ' MB' : (file.size / 1024).toFixed(0) + ' KB'}{preview.sampled ? ' · stats estimated from first 8 MB' : ''}</div>
+        </div>
+        <div class="preview-body">
+          <!-- KPI strip -->
+          <div class="preview-stats">
+            <KpiCard label="Rows" value={preview.totalRows.toLocaleString()} />
+            <KpiCard label="Branches" value={preview.branches.length.toString()} />
+            <KpiCard label="Outlets" value={preview.outletCount.toLocaleString()} />
+            <KpiCard label="Columns" value={preview.headers.length.toString()} />
+            <KpiCard label="Date Range" value={preview.dateRange} />
+          </div>
+
+          <!-- Column mapping -->
+          <div class="preview-section">
+            <div class="preview-section-title">
+              Columns detected — {preview.headers.length - preview.requiredMissing.length}/{REQUIRED_COLS.length + OPTIONAL_COLS.length} known schema cols found
+            </div>
+
+            <div class="col-legend">
+              <span><span class="chip chip-req">✓</span> required matched</span>
+              <span><span class="chip chip-bad">✕</span> required missing</span>
+              <span><span class="chip chip-opt">✓</span> optional present</span>
+            </div>
+
+            <div class="col-group-title">Required ({REQUIRED_COLS.length - preview.requiredMissing.length}/{REQUIRED_COLS.length})</div>
+            <div class="col-chips">
+              {#each REQUIRED_COLS as col}
+                {@const ok = preview.headers.includes(col)}
+                <span class="chip {ok ? 'chip-req' : 'chip-bad'}">{ok ? '✓' : '✕'} {col}</span>
+              {/each}
+            </div>
+
+            {#if preview.optionalPresent.length > 0}
+              <div class="col-group-title">Optional present ({preview.optionalPresent.length}/{OPTIONAL_COLS.length})</div>
+              <div class="col-chips">
+                {#each preview.optionalPresent as col}
+                  <span class="chip chip-opt">✓ {col}</span>
+                {/each}
+              </div>
+            {/if}
+
+            {#if preview.requiredMissing.length > 0}
+              <div class="alert alert-danger" style="margin-top:10px;">
+                Missing required: {preview.requiredMissing.join(', ')}
+              </div>
+            {:else}
+              <div class="preview-ok">✓ All {REQUIRED_COLS.length} required columns matched — ready to classify</div>
+            {/if}
+          </div>
+
+          <!-- Sample table -->
+          <div class="preview-section">
+            <div class="preview-section-title">Sample — first {preview.rows.length} rows</div>
+            <div class="preview-table-wrap">
+              <table class="preview-table">
+                <thead>
+                  <tr>
+                    {#each preview.headers as h}
+                      <th>{h}</th>
+                    {/each}
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each preview.rows as row}
+                    <tr>
+                      {#each preview.headers as _, ci}
+                        <td>{row[ci] ?? ''}</td>
+                      {/each}
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+            <div class="preview-foot">showing {preview.rows.length} of {preview.totalRows.toLocaleString()} rows</div>
+          </div>
+
+          <!-- Branch distribution -->
+          {#if preview.branches.length > 0}
+            {@const maxCount = preview.branches[0].count}
+            <div class="preview-section">
+              <div class="preview-section-title">Branch distribution</div>
+              <div class="branch-bars">
+                {#each preview.branches.slice(0, 5) as b}
+                  <div class="branch-bar-row">
+                    <div class="branch-bar-name">{b.name}</div>
+                    <div class="branch-bar-track">
+                      <div class="branch-bar-fill" style="width: {(b.count / maxCount) * 100}%"></div>
+                    </div>
+                    <div class="branch-bar-count">{b.count.toLocaleString()}</div>
+                  </div>
+                {/each}
+                {#if preview.branches.length > 5}
+                  <div class="branch-more">+ {preview.branches.length - 5} more</div>
+                {/if}
+              </div>
+            </div>
+          {/if}
+        </div>
+      </div>
+    {/if}
 
     <!-- Error -->
     {#if error}
@@ -846,6 +1127,29 @@
               <span>{item}</span>
             </div>
           {/each}
+        </div>
+      </div>
+    </div>
+  </div>
+
+<!-- ======== UPLOADING STATE ======== -->
+{:else if state === 'uploading'}
+  <div class="upload-wrap animate-fade-up">
+    <div class="card uploading-card">
+      <div class="card-head">
+        <div class="card-head-title">Uploading to App</div>
+        <div class="card-head-sub">{file?.name} · {file ? (file.size / 1024 / 1024).toFixed(2) : 0} MB → staging on disk</div>
+      </div>
+      <div class="uploading-body">
+        <div class="uploading-pct">{uploadPct.toFixed(1)}%</div>
+        <div class="uploading-bar-track">
+          <div class="uploading-bar-fill" style="width: {uploadPct}%"></div>
+        </div>
+        <div class="uploading-stats">
+          {(uploadLoaded / 1024 / 1024).toFixed(1)} MB of {(uploadTotal / 1024 / 1024).toFixed(1)} MB transferred
+        </div>
+        <div class="uploading-hint">
+          File is being staged to local app storage. Database write happens only after classification completes.
         </div>
       </div>
     </div>
@@ -991,10 +1295,11 @@
   <!-- KPI cards grid -->
   <div class="grid-kpi results-kpis">
     <KpiCard label="Total Outlets" value={kpis.total.toLocaleString()} subtitle="{kpis.branchCount} branches" accent="var(--text-muted)" />
-    <KpiCard label="Class A" value={kpis.classA.toLocaleString()} subtitle="{kpis.total > 0 ? fmtPct((kpis.classA / kpis.total) * 100) : '0%'} of total" accent="var(--class-a)" />
+    <KpiCard label="Class A (total)" value={kpis.classA.toLocaleString()} subtitle="{kpis.total > 0 ? fmtPct((kpis.classA / kpis.total) * 100) : '0%'} of total" accent="var(--class-a)" />
+    <KpiCard label="F4 Distributors" value={kpis.classA_f4.toLocaleString()} subtitle="{kpis.classA > 0 ? fmtPct((kpis.classA_f4 / kpis.classA) * 100) : '0%'} of Class A · {fmtNum(kpis.revA_f4)}" accent="var(--class-f4)" />
+    <KpiCard label="Pure Class A" value={kpis.classA_pure.toLocaleString()} subtitle="Pareto-ranked, no override" accent="var(--class-a)" />
     <KpiCard label="Class B" value={kpis.classB.toLocaleString()} subtitle="{kpis.total > 0 ? fmtPct((kpis.classB / kpis.total) * 100) : '0%'} of total" accent="var(--class-b)" />
     <KpiCard label="Class C" value={kpis.classC.toLocaleString()} subtitle="{kpis.total > 0 ? fmtPct((kpis.classC / kpis.total) * 100) : '0%'} of total" accent="var(--class-c)" />
-    <KpiCard label="Wholesalers" value={kpis.wholesalers.toLocaleString()} subtitle="F4 flagged" accent="var(--class-f4)" />
     <KpiCard label="Total Revenue" value={fmtNum(kpis.revenue)} subtitle="2-year aggregate" accent="var(--class-a)" />
   </div>
 
@@ -1058,6 +1363,82 @@
       <ChapterHeading title="Classification Summary" subtitle="Breakdown by Pareto class" />
       <DataTable title="SUMMARY" data={summaryRows()} columns={['Classification', 'Count', 'Revenue', 'Avg Sales', 'Share %']} maxHeight="300px" />
     </div>
+
+    <!-- ===== Outlet Lifecycle (cohort analysis from DocDate) ===== -->
+    <div class="section-block">
+      <ChapterHeading title="Outlet Lifecycle" subtitle="Cohort analysis from purchase history" />
+      <div class="lifecycle-grid">
+        <KpiCard label="New" value={lifecycle().New.toLocaleString()} subtitle="First buy < 3M ago" accent="var(--class-a)" />
+        <KpiCard label="Active" value={lifecycle().Active.toLocaleString()} subtitle="Bought in last 3M" accent="var(--accent)" />
+        <KpiCard label="Reactivated" value={lifecycle().Reactivated.toLocaleString()} subtitle="Returned after gap" accent="var(--class-f4)" />
+        <KpiCard label="Dormant" value={lifecycle().Dormant.toLocaleString()} subtitle="Last buy 3–12M ago" accent="var(--class-b)" />
+        <KpiCard label="Lost" value={lifecycle().Lost.toLocaleString()} subtitle="Last buy > 12M ago" accent="var(--class-c)" />
+      </div>
+    </div>
+
+    <!-- ===== F4 Distributor Deep-Dive ===== -->
+    {#if f4Data && f4Data.f4_count > 0}
+      <div class="section-block">
+        <ChapterHeading title="F4 Distributor Deep-Dive" subtitle="{f4Data.f4_count.toLocaleString()} F4 outlets · {f4Data.revenue_share_pct}% of total revenue" />
+
+        <div class="f4-kpis">
+          <KpiCard label="Health Score" value={f4Data.health_score + '%'} subtitle="100 = all stable" accent="var(--class-f4)" />
+          <KpiCard label="F4 Revenue" value={fmtNum(f4Data.f4_revenue)} subtitle="{f4Data.revenue_share_pct}% share" accent="var(--accent)" />
+          <KpiCard label="Growing" value={f4Data.growing.toLocaleString()} subtitle="6M > ½·12M" accent="var(--class-a)" />
+          <KpiCard label="Declining" value={f4Data.declining.toLocaleString()} subtitle="Carton volume falling" accent="var(--class-c)" />
+          <KpiCard label="High Risk" value={f4Data.high_risk.toLocaleString()} subtitle="Churn likely" accent="var(--class-c)" />
+        </div>
+
+        {#if f4Data.top10?.length}
+          <div style="margin-top:18px;">
+            <DataTable title="TOP 10 F4 BY REVENUE" maxHeight="350px"
+              data={f4Data.top10.map((r: any) => ({
+                'Cus.Code': r.code,
+                'Cus.Name': r.name,
+                Branch: r.branch,
+                '2Yr Sales': fmtNum(r.revenue_2yr),
+                '6M Sales': fmtNum(r.revenue_6m),
+                '3M Sales': fmtNum(r.revenue_3m),
+                Growth: r.growth || '-',
+                Risk: r.risk || '-',
+              }))}
+              columns={['Cus.Code', 'Cus.Name', 'Branch', '2Yr Sales', '6M Sales', '3M Sales', 'Growth', 'Risk']} />
+          </div>
+        {/if}
+
+        {#if f4Data.churn_risk?.length}
+          <div style="margin-top:18px;">
+            <DataTable title="F4 AT CHURN RISK — IMMEDIATE FOLLOW-UP" maxHeight="350px"
+              data={f4Data.churn_risk.map((r: any) => ({
+                'Cus.Code': r.code,
+                'Cus.Name': r.name,
+                Branch: r.branch,
+                '2Yr Sales': fmtNum(r.revenue_2yr),
+                '6M Sales': fmtNum(r.revenue_6m),
+                Growth: r.growth || '-',
+                Risk: r.risk || '-',
+                Lifecycle: r.lifecycle || '-',
+              }))}
+              columns={['Cus.Code', 'Cus.Name', 'Branch', '2Yr Sales', '6M Sales', 'Growth', 'Risk', 'Lifecycle']} />
+          </div>
+        {/if}
+
+        {#if f4Data.by_branch?.length}
+          <div style="margin-top:18px;">
+            <DataTable title="F4 PRESENCE BY BRANCH" maxHeight="400px"
+              data={f4Data.by_branch.map((b: any) => ({
+                Branch: b.branch,
+                'Total Outlets': b.total_outlets.toLocaleString(),
+                'F4 Count': b.f4_count.toLocaleString(),
+                'F4 %': b.f4_pct + '%',
+                'F4 Revenue': fmtNum(b.f4_revenue),
+                'Revenue Share': b.revenue_share + '%',
+              }))}
+              columns={['Branch', 'Total Outlets', 'F4 Count', 'F4 %', 'F4 Revenue', 'Revenue Share']} />
+          </div>
+        {/if}
+      </div>
+    {/if}
 
     <div class="section-block">
       <ChapterHeading title="Top 10 Outlets" subtitle="Highest revenue outlets across selection" />
@@ -1673,8 +2054,15 @@
 
   /* ===== Upload ===== */
   .upload-wrap {
-    max-width: 680px;
-    margin: 0 auto;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+  }
+  .upload-card,
+  .preview-panel,
+  .uploading-card {
+    width: 100%;
+    max-width: none;
   }
   .upload-card {
     padding: 28px;
@@ -1767,6 +2155,203 @@
     grid-template-columns: repeat(3, 1fr);
     gap: 12px;
     margin-top: 18px;
+  }
+
+  /* ===== File Preview Panel ===== */
+  .preview-panel {
+    margin-top: 20px;
+  }
+  .preview-body {
+    padding: 18px 20px 22px;
+  }
+  .preview-stats {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+  @media (max-width: 900px) {
+    .preview-stats { grid-template-columns: repeat(2, 1fr); }
+  }
+  .preview-section {
+    margin-top: 18px;
+  }
+  .preview-section-title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-soft, var(--text));
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 8px;
+  }
+  .col-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .chip {
+    font-size: 0.78rem;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    background: var(--surface, var(--bg));
+    color: var(--text);
+    font-family: inherit;
+  }
+  .chip-ok { border-color: var(--accent); color: var(--accent); }
+  .chip-req {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .chip-bad {
+    background: #c0392b;
+    border-color: #c0392b;
+    color: #fff;
+    font-weight: 600;
+  }
+  .chip-opt {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: transparent;
+  }
+  .col-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    font-size: 0.75rem;
+    color: var(--text-soft, var(--text));
+    margin-bottom: 12px;
+    opacity: 0.85;
+  }
+  .col-legend .chip { padding: 1px 6px; font-size: 0.7rem; }
+  .col-group-title {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-soft, var(--text));
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 10px 0 6px;
+    opacity: 0.7;
+  }
+  .preview-ok {
+    margin-top: 10px;
+    font-size: 0.82rem;
+    color: var(--accent);
+  }
+  .preview-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .preview-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+  }
+  .preview-table th,
+  .preview-table td {
+    text-align: left;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .preview-table thead th {
+    background: var(--surface-2, var(--bg));
+    position: sticky;
+    top: 0;
+    font-weight: 600;
+  }
+  .preview-table tbody tr:hover { background: var(--surface, transparent); }
+  .preview-foot {
+    margin-top: 6px;
+    font-size: 0.75rem;
+    color: var(--text-soft, var(--text));
+    opacity: 0.7;
+  }
+  .branch-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .branch-bar-row {
+    display: grid;
+    grid-template-columns: 140px 1fr 80px;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.82rem;
+  }
+  .branch-bar-name { font-weight: 500; }
+  .branch-bar-track {
+    height: 14px;
+    background: var(--surface-2, var(--border));
+  }
+  .branch-bar-fill {
+    height: 100%;
+    background: var(--accent);
+  }
+  .branch-bar-count {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-soft, var(--text));
+  }
+  .branch-more {
+    font-size: 0.78rem;
+    opacity: 0.7;
+    margin-top: 4px;
+  }
+
+  /* ===== Uploading state ===== */
+  .uploading-card { margin: 0; }
+  .uploading-body {
+    padding: 32px 28px 28px;
+    text-align: center;
+  }
+  .uploading-pct {
+    font-size: 2.4rem;
+    font-weight: 600;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 14px;
+  }
+  .uploading-bar-track {
+    height: 10px;
+    background: var(--surface-2, var(--border));
+    overflow: hidden;
+    margin-bottom: 10px;
+  }
+  .uploading-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.1s linear;
+  }
+  .uploading-stats {
+    font-size: 0.85rem;
+    color: var(--text-soft, var(--text));
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 18px;
+  }
+  .lifecycle-grid,
+  .f4-kpis {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 12px;
+    margin-top: 12px;
+  }
+  @media (max-width: 1100px) {
+    .lifecycle-grid, .f4-kpis { grid-template-columns: repeat(3, 1fr); }
+  }
+  @media (max-width: 720px) {
+    .lifecycle-grid, .f4-kpis { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  .uploading-hint {
+    font-size: 0.78rem;
+    opacity: 0.65;
+    max-width: 460px;
+    margin: 0 auto;
+    line-height: 1.5;
   }
 
   .run-btn {
