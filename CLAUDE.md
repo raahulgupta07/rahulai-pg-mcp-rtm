@@ -185,10 +185,28 @@ Overview · Activity (30-day trend) · Users (analytics + enable/disable) · Act
 Audit Log (filterable + CSV) · Jobs · Cost · Auth & Security (local vs LDAP, failed logins).
 
 ## Scalability
-- PostgreSQL + psycopg pool (max 32)
-- Heavy work (classify pipeline, Excel build) offloaded via `run_in_threadpool` — the async
-  event loop never blocks; heavy read endpoints are sync `def` (auto-threadpooled)
-- Worker-thread pool raised to 64 — handles ~100 concurrent users
+- **Bundled image**: single container (Postgres + pgvector + FastAPI + SvelteKit
+  via supervisord). 4 uvicorn workers, PG tuned (`shared_buffers=512MB`,
+  `work_mem=32MB`, `max_connections=200`). ~100 req/s, ~400 concurrent users.
+  Override workers via `UVICORN_WORKERS` env. Image ~1.1 GB.
+- **Multi-container compose**: separate Postgres + app. Each uvicorn worker
+  has own 32-conn psycopg pool (4 workers × 32 = 128 max conns vs PG max 200).
+- Heavy work (classify, Excel build) offloaded via `run_in_threadpool` — async
+  event loop never blocks. Heavy read endpoints sync `def` (auto-threadpooled).
+- AI pipeline = `asyncio.gather` of 3 macro calls + chunked outlet enrichment
+  (Semaphore-gated). 3-4× speedup vs serial.
+
+## Deploy Options
+| Mode | File | Containers | Users |
+|------|------|-----------|-------|
+| **Bundled** | `Dockerfile.bundled` + `docker-compose.bundled.yml` | 1 | ~400 |
+| **Multi-container** | `docker-compose.yml` | 2 | ~1k |
+| **Local dev** | `cd backend && uvicorn ...` + `npm run dev` | — | — |
+
+Bundled internals: `docker/supervisord.conf` runs postgres (via
+`docker-entrypoint.sh` with `-c` tuning flags) + uvicorn (with `pg_isready`
+wait loop) as managed children. `docker/init-rtm-db.sh` enables pgvector
+on first boot via Postgres `/docker-entrypoint-initdb.d/` convention.
 
 ## Design System
 **Claude.ai-style, flat** (zero border-radius). Inter font; token-only CSS variables

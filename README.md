@@ -183,8 +183,34 @@ Defaults — all configurable on the **Rules** page, version-tracked with rollba
 
 ## Scalability
 
-PostgreSQL + connection pool; heavy work (classify, Excel) offloaded to a worker-thread
-pool so the async event loop never blocks — handles ~100 concurrent users.
+### Bundled image (default — single container)
+- **4 uvicorn workers** (override: `-e UVICORN_WORKERS=8`)
+- Postgres tuned: `shared_buffers=512MB`, `work_mem=32MB`, `max_connections=200`
+- ~100 req/s throughput · ~400 concurrent users · ~1.6 GB peak RAM
+- Recommend 4 GB host RAM, 2+ vCPU
+
+### Multi-container (production)
+- Same tuning, independently scaled Postgres + app
+- Each uvicorn worker has its own 32-conn psycopg pool (4 workers × 32 = 128 max)
+- Heavy work (classify pipeline, Excel build) offloaded via `run_in_threadpool` —
+  async event loop never blocks
+- AI pipeline parallel + chunked (asyncio.gather + Semaphore) — 3–4x speedup
+  vs serial
+
+### Scaling path
+Bundled → Multi-container (separate PG) → K8s + managed PG + pgbouncer + HPA.
+Volume migrates straight across — same Postgres data dir.
+
+### Trade-off summary
+
+| | Bundled | Multi-container | K8s + managed PG |
+|---|---|---|---|
+| Users | ~400 | ~1k | unbounded |
+| Image | ~1.1 GB | 400 + 350 MB | same |
+| Horizontal scale app | ✗ | partial | ✓ HPA |
+| HA / PG replica | ✗ | ✗ | ✓ |
+| Upgrade PG only | ✗ | ✓ | ✓ |
+| One-command deploy | ✓ | ✗ | ✗ |
 
 ## Environment Variables
 
