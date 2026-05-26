@@ -1,0 +1,31 @@
+# Single-image bundle — Postgres + app together in one container.
+# For users who want named volumes via compose but still one service.
+# For pure `docker run`, see README.
+
+services:
+  rtm:
+    build:
+      context: .
+      dockerfile: Dockerfile.bundled
+    image: rahulai/rtm:bundled
+    container_name: rtm
+    ports:
+      - "8011:8001"
+    volumes:
+      - rtmdb:/var/lib/postgresql/data
+      - rtm-data:/app/data
+      - rtm-uploads:/app/uploads
+      - rtm-outputs:/app/outputs
+    environment:
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin123
+      JWT_SECRET_KEY: change-in-production
+      # Optional — uncomment to enable AI insights
+      # OPENROUTER_API_KEY: sk-or-v1-...
+    restart: unless-stopped
+
+volumes:
+  rtmdb:
+  rtm-data:
+  rtm-uploads:
+  rtm-outputs:

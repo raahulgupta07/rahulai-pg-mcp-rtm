@@ -43,13 +43,41 @@ Built for P&G Myanmar market data — 11,000+ outlets, 9 branches.
 
 ## Quick Start
 
-**Docker (recommended — runs Postgres + app):**
+### Option 1 — Bundled single image (Open WebUI-style — one container)
+Postgres + pgvector + app all in one image. No compose needed.
+
+```bash
+docker build -f Dockerfile.bundled -t rahulai/rtm:bundled .
+docker run -d --name rtm \
+  -p 8011:8001 \
+  -v rtmdb:/var/lib/postgresql/data \
+  -v rtm-data:/app/data \
+  -v rtm-uploads:/app/uploads \
+  -v rtm-outputs:/app/outputs \
+  -e ADMIN_PASSWORD=changeme \
+  -e OPENROUTER_API_KEY=sk-or-v1-... \
+  rahulai/rtm:bundled
+# → http://localhost:8011
+```
+
+Or with compose (same image, just managed volumes):
+```bash
+docker compose -f docker-compose.bundled.yml up -d --build
+```
+
+Image ~1.1 GB. Internally `supervisord` runs Postgres + uvicorn together.
+Data persists in named volumes — restart-safe.
+
+### Option 2 — Multi-container (production)
+Separate Postgres + app containers. Easier to scale or upgrade independently.
+
 ```bash
 docker compose up -d --build
 # → http://localhost:8011
 ```
 
-**Local dev** (needs a Postgres at `DATABASE_URL`):
+### Option 3 — Local dev
+Needs a Postgres reachable at `DATABASE_URL`.
 ```bash
 cd backend && pip install -r requirements.txt && uvicorn main:app --reload --port 8001
 cd frontend && npm install && npm run dev

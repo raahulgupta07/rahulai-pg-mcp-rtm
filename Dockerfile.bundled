@@ -1,0 +1,88 @@
+# ============================================================
+# Single-image bundle: Postgres 18 + pgvector + Python + SvelteKit
+# Run with one command — no compose needed.
+#
+#   docker run -d --name rtm \
+#       -p 8011:8001 \
+#       -v rtmdb:/var/lib/postgresql/data \
+#       -v rtm-app:/app/data \
+#       -e ADMIN_PASSWORD=changeme \
+#       -e OPENROUTER_API_KEY=sk-or-v1-... \
+#       rahulai/rtm:latest
+#
+# Internally supervisord runs postgres + uvicorn together.
+# ============================================================
+
+# ── Stage 1: build frontend ──────────────────────────────────
+FROM node:20-slim AS frontend-build
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+
+# ── Stage 2: install Python wheels (cleaner cache layer) ─────
+FROM python:3.11-slim AS python-deps
+WORKDIR /tmp
+COPY backend/requirements.txt ./
+RUN pip wheel --no-cache-dir --wheel-dir /tmp/wheels -r requirements.txt
+
+
+# ── Final stage: pgvector/pg18 + python + app + supervisord ──
+FROM pgvector/pgvector:pg18
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    POSTGRES_USER=rtm \
+    POSTGRES_PASSWORD=rtm \
+    POSTGRES_DB=rtm \
+    PGDATA=/var/lib/postgresql/data \
+    DATABASE_URL=postgresql://rtm:rtm@127.0.0.1:5432/rtm \
+    LLM_MODEL=google/gemini-3.1-flash-lite-preview \
+    LLM_BASE_URL=https://openrouter.ai/api/v1 \
+    ADMIN_USERNAME=admin \
+    ADMIN_PASSWORD=admin123 \
+    JWT_SECRET_KEY=change-in-production \
+    UPLOAD_DIR=/app/uploads
+
+# Python + supervisord
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv supervisor curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python deps from prebuilt wheels
+COPY --from=python-deps /tmp/wheels /tmp/wheels
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages \
+        --no-index --find-links=/tmp/wheels -r /tmp/requirements.txt \
+    && rm -rf /tmp/wheels /tmp/requirements.txt
+
+# App code
+WORKDIR /app
+COPY backend/ ./backend/
+COPY src/ ./src/
+COPY --from=frontend-build /app/frontend/build ./frontend/build
+
+# Init DB on first boot (Postgres image runs anything in this dir once)
+COPY docker/init-rtm-db.sh /docker-entrypoint-initdb.d/01-init-rtm.sh
+RUN chmod +x /docker-entrypoint-initdb.d/01-init-rtm.sh
+
+# Supervisor config
+COPY docker/supervisord.conf /etc/supervisor/conf.d/rtm.conf
+
+# Custom entrypoint — handles first-boot DB init then starts supervisor
+COPY docker/entrypoint-bundled.sh /usr/local/bin/entrypoint-bundled.sh
+RUN chmod +x /usr/local/bin/entrypoint-bundled.sh
+
+# Persistent dirs (DB, uploads, outputs, user/config json)
+VOLUME /var/lib/postgresql/data
+VOLUME /app/uploads
+VOLUME /app/outputs
+VOLUME /app/data
+
+EXPOSE 8001
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=4 \
+    CMD curl -fsS http://127.0.0.1:8001/api/health || exit 1
+
+ENTRYPOINT ["/usr/local/bin/entrypoint-bundled.sh"]
