@@ -1,25 +1,28 @@
-# MCP Agent — P&G Route-to-Market Outlet Classification
+# RTM Agent — P&G Route-to-Market Outlet Classification
 
-Intelligent outlet classification system using the **Pareto 80/15/5 Rule**, partitioned by branch. Built for P&G Myanmar market data.
+Intelligent outlet classification using the **Pareto 80/15/5 rule**, partitioned per branch.
+Built for P&G Myanmar market data — 11,000+ outlets, 9 branches.
 
 ## Features
 
-- **Pareto Classification** — 11,000+ outlets into Class A (80%), B (15%), C (5%) per branch
-- **F4/F2 Visit Frequency** — Class A = F4 (high priority), Class B/C = F2 (standard)
-- **9-Branch Partitioning** — Each branch is its own Pareto universe
-- **AI Enrichment** — Growth signals, risk levels, visit priority, action recommendations
-- **LLM Insights** — Executive summary + class recommendations via Gemini
-- **Live Pipeline Terminal** — Real-time CLI output during processing
-- **Job Comparison** — Side-by-side stats, outlet movement tracker (upgrades/downgrades)
-- **Coverage Gap Analysis** — Township breakdown with STRONG/MODERATE/WEAK/GAP status
-- **RTM Data Explorer** — Full outlet table with filters + CSV/Excel export
-- **Seller Workload** — Route outlet counts vs targets (YGN: 25-30, Regional: 30-35)
-- **Beautified Excel** — 15-sheet report with color-coded headers, classifications, risk levels
-- **Audit Log** — Tracks all user actions (login, classify, export, user management)
-- **File Validation** — Checks required columns before running pipeline
-- **Job History** — Every run saved and replayable with full results
-- **User Management** — JWT auth, admin/viewer roles, admin creates users via UI
-- **Brutalist UI** — Command center design with Space Grotesk, ink borders, stamp shadows
+- **Pareto Classification** — outlets graded Class A / B / C per branch, each branch its own universe
+- **Configurable Rule Engine** — every threshold, the wholesaler rule, category overrides,
+  AI behaviour — all tuned from the UI (`/rules`), versioned with one-click rollback
+- **AI Enrichment** — growth signal, risk level, visit priority, per-outlet actions + LLM insights
+- **LLM Cost Tracking** — real OpenRouter token + USD cost captured per job
+- **Run Comparison** — every run compared to the previous: class counts, revenue, channels,
+  branches, outlet movement — on screen and in Excel
+- **Platform Analytics** — 8-tab dashboard: usage, trends, per-user activity, audit explorer,
+  jobs, cost, security
+- **Roles + Groups + Permissions** — 3 roles, plus admin-defined groups granting extra access
+- **LDAP / Active Directory** — up to 5 servers, per-user home server, email auto-merge,
+  group-membership sync
+- **Job Sharing** — share a specific job with specific users
+- **Beautified Excel** — multi-sheet report incl. run-info stamp + comparison sheets
+- **Coverage Gap Analysis** — township breakdown
+- **Theming** — light/dark, 6 palettes + custom accent, saved per user
+- **Audit Log** — every action tracked, incl. failed logins
+- **Account management** — password change/reset, disable, LDAP merge
 
 ## Tech Stack
 
@@ -27,100 +30,103 @@ Intelligent outlet classification system using the **Pareto 80/15/5 Rule**, part
 |-------|-----------|
 | Frontend | SvelteKit 5, Tailwind CSS 4, TypeScript |
 | Backend | FastAPI (Python) |
-| Database | SQLite |
-| AI | Google Gemini 3.1 Flash Lite via OpenRouter |
-| Auth | JWT (HS256) |
-| Deploy | Docker + docker-compose |
+| Database | PostgreSQL 18 + pgvector (psycopg3 pool) |
+| AI | Google Gemini 3.1 Flash Lite via OpenRouter (optional) |
+| Auth | JWT (HS256) + LDAP / Active Directory |
+| Deploy | Docker + docker-compose (app + Postgres) |
 
 ## Quick Start
 
+**Docker (recommended — runs Postgres + app):**
 ```bash
-# Backend
-cd backend && pip install -r requirements.txt
-uvicorn main:app --reload --port 8001
+docker compose up -d --build
+# → http://localhost:8011
+```
 
-# Frontend (new terminal)
+**Local dev** (needs a Postgres at `DATABASE_URL`):
+```bash
+cd backend && pip install -r requirements.txt && uvicorn main:app --reload --port 8001
 cd frontend && npm install && npm run dev
-```
-
-**Production (single port):**
-```bash
-cd frontend && npm run build
-cd ../backend && uvicorn main:app --port 8001
-# Everything on http://localhost:8001
-```
-
-**Docker:**
-```bash
-docker compose up -d
-# http://localhost:8001
 ```
 
 ## Default Credentials
 
 | User | Password | Role |
 |------|----------|------|
-| admin | admin123 | Admin (configurable via .env) |
+| admin | admin123 | super_admin (configurable via `.env`) |
 
-All other users created by admin via Settings > Users tab.
+Other users created by super_admin in Settings ▸ Users, or auto-provisioned via LDAP.
+
+## Access Model
+
+| Role | Access |
+|------|--------|
+| `super_admin` | Everything — Settings, Analytics, LDAP, model config, users, groups |
+| `admin` | Classify, data pages, Rules |
+| `user` | Classify, view own/shared data |
+
+**Groups** grant extra permissions (`rules`, `analytics`) on top of any role —
+effective access = role base ∪ groups. Groups can map to LDAP groups for auto-sync.
 
 ## Pages
 
-| Page | Route | Description |
-|------|-------|-------------|
-| **Classify** | `/` | Upload CSV, run pipeline with live terminal, view results |
-| **History** | `/history` | Past jobs, click to reload full results |
-| **RTM Data** | `/rtm` | Filter and export outlet data (branch, class, search) |
-| **Compare** | `/compare` | Select 2 jobs, see upgrades/downgrades/new/lost outlets |
-| **Coverage** | `/coverage` | Township gap analysis with coverage status |
-| **Docs** | `/docs` | Classification rules, input format, algorithm (6 tabs) |
-| **Settings** | `/users` | Users + Model Config + Audit Log (admin only) |
+| Page | Route | Access |
+|------|-------|--------|
+| Classify | `/` | all |
+| History | `/history` | all (own + shared jobs) |
+| RTM Data | `/rtm` | all |
+| Compare | `/compare` | all |
+| Coverage | `/coverage` | all |
+| Docs | `/docs` | all |
+| Rules | `/rules` | `rules` permission |
+| Analytics | `/analytics` | `analytics` permission |
+| Settings | `/users` | super_admin |
 
 ## Input File
 
-Single CSV with required columns:
+Single CSV. Required columns:
 
 | Column | Description |
 |--------|-------------|
-| `Cus.Code` | Customer/outlet ID |
+| `Cus.Code` | Customer / outlet ID |
 | `Cus.Name` | Customer name |
 | `TotalAmount` | Sales amount per transaction |
 | `TotalPcs` | Quantity sold |
 | `BranchName` | Branch (partition key) |
+| `Item Type` | Local or Import |
 | `Item Class` | Nutrition, Food, Non Food |
 | `NumInBuy` | Units per carton |
 
-Optional: `DocDate`, `InvoiceNo`, `BrandName`, `Item Type`, `Channel`, `RouteCode`
+Optional: `DocDate`, `InvoiceNo`, `BrandName`, `Outlet Channel`, `Channel`, `GroupName`, `RouteCode`
 
 ## Classification Rules
 
-| Class | Rule | Visit Freq | Revenue Share |
-|-------|------|-----------|--------------|
-| **A** | Cumulative % <= 80% | F4 (high) | ~80% |
-| **B** | 80% < Cumulative % <= 95% | F2 (standard) | ~15% |
-| **C** | Cumulative % > 95% | F2 (standard) | ~5% |
-| **F4** | >= 3 cartons/brand/month (Local) | F4 | Override to A |
+Defaults — all configurable on the **Rules** page, version-tracked with rollback:
 
-## API Endpoints
+| Class | Rule | Visit Freq |
+|-------|------|-----------|
+| **A** | cumulative % ≤ 80% | F4 |
+| **B** | 80% < cumulative % ≤ 95% | F2 |
+| **C** | cumulative % > 95% | F2 |
+| **F4** | ≥ 3 cartons/brand/month (Local) | F4 — override to A |
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/classify` | POST | Upload CSV + run pipeline |
-| `/api/jobs` | GET | List all jobs |
-| `/api/jobs/{id}` | GET | Job details + results + insights |
-| `/api/jobs/{id}/export` | GET | Download beautified Excel |
-| `/api/rtm-data` | GET | Outlet data (filterable) |
-| `/api/compare` | GET | Compare 2 jobs side-by-side |
-| `/api/coverage` | GET | Township coverage analysis |
-| `/api/settings` | GET/POST | Config + thresholds |
-| `/api/users` | GET/POST/DELETE | User management |
-| `/api/audit` | GET | Audit log (admin) |
-| `/api/auth/login` | POST | JWT login |
-| `/api/health` | GET | System status |
+## Configuration — all from the UI
+
+- **Rules** (`/rules`) — Pareto cutoffs, wholesaler, category override, workload, growth, risk, AI
+- **Model & provider** (Settings ▸ Model & Config) — LLM model + base URL, with a Test button
+- **LDAP** (Settings ▸ LDAP) — up to 5 directory servers, per-server Test
+- **Groups** (Settings ▸ Groups) — define groups, grant permissions, map to LDAP groups
+- **Appearance** — theme, palette, density (per-user)
+
+## Scalability
+
+PostgreSQL + connection pool; heavy work (classify, Excel) offloaded to a worker-thread
+pool so the async event loop never blocks — handles ~100 concurrent users.
 
 ## Environment Variables
 
 ```env
+DATABASE_URL=postgresql://rtm:rtm@postgres:5432/rtm
 OPENROUTER_API_KEY=sk-or-v1-...
 LLM_MODEL=google/gemini-3.1-flash-lite-preview
 LLM_BASE_URL=https://openrouter.ai/api/v1
@@ -132,14 +138,14 @@ ADMIN_DISPLAY_NAME=Administrator
 
 ## Data Persistence
 
-These files are local-only (never pushed to git):
-- `data/rtm.db` — All jobs, results, insights, audit log
-- `data/users.json` — User accounts
-- `data/settings.json` — Threshold defaults
+- **PostgreSQL** (`pgdata` volume) — jobs, results, insights, audit log, rule history, job shares
+- `data/users.json` — user accounts + group membership
+- `data/groups.json` — groups & permissions
+- `data/settings.json` — system settings + LLM provider
+- `data/rule_config.json` — active classification rules
+- `data/ldap_config.json` — LDAP servers
 - `outputs/*.xlsx` — Excel reports
-- `.env` — API keys + credentials
-
-Updates via `git pull` won't affect existing data.
+- `.env` — keys + credentials
 
 ## License
 

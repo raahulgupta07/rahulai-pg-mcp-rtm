@@ -1,10 +1,10 @@
 <script lang="ts">
   let { title = "", data = [], columns = [], maxHeight = "500px" } = $props();
 
-  let sortCol = $state(null);
+  let sortCol = $state<string | null>(null);
   let sortAsc = $state(true);
 
-  function handleSort(col) {
+  function handleSort(col: string) {
     if (sortCol === col) {
       sortAsc = !sortAsc;
     } else {
@@ -13,11 +13,11 @@
     }
   }
 
-  let sortedData = $derived(() => {
+  let rows = $derived.by(() => {
     if (!sortCol) return data;
-    const sorted = [...data].sort((a, b) => {
-      const va = a[sortCol] ?? "";
-      const vb = b[sortCol] ?? "";
+    return [...data].sort((a: any, b: any) => {
+      const va = a[sortCol!] ?? "";
+      const vb = b[sortCol!] ?? "";
       if (typeof va === "number" && typeof vb === "number") {
         return sortAsc ? va - vb : vb - va;
       }
@@ -27,81 +27,36 @@
       if (sa > sb) return sortAsc ? 1 : -1;
       return 0;
     });
-    return sorted;
   });
-
-  let rows = $derived(sortedData());
 </script>
 
-<div
-  style="
-    border-top: 2px solid #383832;
-    border-left: 2px solid #383832;
-    border-bottom: 4px solid #383832;
-    border-right: 4px solid #383832;
-    border-radius: 0;
-    box-shadow: 4px 4px 0px 0px #383832;
-    font-family: 'Space Grotesk', sans-serif;
-    overflow: hidden;
-  "
->
-  <!-- Title bar -->
-  <div
-    class="flex items-center justify-between px-3 py-2"
-    style="background: #383832; color: #feffd6;"
-  >
-    <span class="font-black uppercase tracking-widest" style="font-size: 11px;">
-      {title}
-    </span>
-    <span
-      class="font-mono font-bold uppercase tracking-widest"
-      style="font-size: 10px; opacity: 0.7;"
-    >
-      {data.length} ROWS
-    </span>
-  </div>
+<div class="data-table-wrap">
+  {#if title}
+    <div class="data-table-head">
+      <span class="title">{title}</span>
+      <span class="meta">{data.length} rows</span>
+    </div>
+  {/if}
 
-  <!-- Scrollable table area -->
-  <div style="max-height: {maxHeight}; overflow-y: auto;">
-    <table class="w-full" style="border-collapse: collapse;">
+  <div style="max-height: {maxHeight}; overflow: auto;">
+    <table class="data-table">
       <thead>
         <tr>
           {#each columns as col}
-            <th
-              class="text-left px-3 py-2 font-black uppercase tracking-widest cursor-pointer select-none"
-              style="
-                background: #ebe8dd;
-                font-size: 10px;
-                color: #383832;
-                border-bottom: 2px solid #383832;
-                position: sticky;
-                top: 0;
-                z-index: 1;
-              "
-              onclick={() => handleSort(col)}
-            >
+            <th class="sortable" onclick={() => handleSort(col)}>
               {col}
               {#if sortCol === col}
-                <span style="margin-left: 4px;">{sortAsc ? "▲" : "▼"}</span>
+                <span style="margin-left:3px;font-size:9px;">{sortAsc ? "▲" : "▼"}</span>
               {/if}
             </th>
           {/each}
         </tr>
       </thead>
       <tbody>
-        {#each rows as row, i}
-          <tr style="background: {i % 2 === 0 ? 'white' : '#fcf9ef'};">
+        {#each rows as row}
+          <tr>
             {#each columns as col}
-              <td
-                class="px-3 py-1.5 font-mono"
-                style="
-                  font-size: 10px;
-                  color: #383832;
-                  border-bottom: 1px solid #ebe8dd;
-                "
-              >
-                {row[col] ?? ""}
-              </td>
+              <td>{row[col] ?? ""}</td>
             {/each}
           </tr>
         {/each}

@@ -1,5 +1,9 @@
 <script lang="ts">
   import { getCoverage } from '$lib/api';
+  import { onMount, onDestroy } from 'svelte';
+  import 'leaflet/dist/leaflet.css';
+  import 'leaflet.markercluster/dist/MarkerCluster.css';
+  import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 
   let data = $state<any>(null);
   let loading = $state(true);
@@ -7,6 +11,35 @@
   let sortCol = $state('total');
   let sortDir = $state<'asc' | 'desc'>('desc');
   let filterStatus = $state('All');
+  let view = $state<'map' | 'tables'>('map');
+
+  // map filters
+  let mapBranch = $state('All');
+  let mapClass = $state('All');
+
+  // leaflet refs
+  let mapEl = $state<HTMLDivElement | undefined>(undefined);
+  let map: any = null;
+  let L = $state<any>(null);
+  let clusterGroup: any = null;
+  let mapReady = $state(false);
+  let shownCount = $state(0);
+
+  const CLASS_COLOR: Record<string, string> = {
+    A: '#5A8F3D',
+    B: '#B5853D',
+    C: '#B5453D',
+    F4: '#4A7D8C',
+  };
+
+  function classKey(c: string): string {
+    if (!c) return 'C';
+    const u = String(c).toUpperCase();
+    if (u.includes('F4') || u.includes('WHOLESAL')) return 'F4';
+    if (u.startsWith('A') || u === 'CLASS A') return 'A';
+    if (u.startsWith('B') || u === 'CLASS B') return 'B';
+    return 'C';
+  }
 
   $effect(() => {
     loadData();
@@ -24,6 +57,114 @@
     }
   }
 
+  // ---- map lifecycle ----
+  onMount(async () => {
+    try {
+      const leaflet = await import('leaflet');
+      const lib = leaflet.default ?? leaflet;
+      await import('leaflet.markercluster');
+      L = lib;
+    } catch (e: any) {
+      console.error('[coverage] leaflet load failed', e);
+      error = 'Map library failed to load: ' + (e?.message || e);
+    }
+  });
+
+  onDestroy(() => {
+    if (map) {
+      map.remove();
+      map = null;
+    }
+  });
+
+  function initMap() {
+    if (!L || !mapEl || map) return;
+    map = L.map(mapEl, { preferCanvas: true }).setView([19.7, 96.1], 6);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 19,
+    }).addTo(map);
+    clusterGroup = (L as any).markerClusterGroup({
+      chunkedLoading: true,
+      maxClusterRadius: 50,
+    });
+    map.addLayer(clusterGroup);
+    mapReady = true;
+  }
+
+  function fmtRevenue(v: number): string {
+    if (v == null) return '—';
+    if (v >= 1e6) return 'Ks ' + (v / 1e6).toFixed(2) + 'M';
+    if (v >= 1e3) return 'Ks ' + (v / 1e3).toFixed(1) + 'K';
+    return 'Ks ' + Math.round(v);
+  }
+
+  function renderMarkers() {
+    if (!map || !clusterGroup || !L || !data?.outlets) return;
+    clusterGroup.clearLayers();
+    const bounds: any[] = [];
+    let n = 0;
+    for (const o of data.outlets) {
+      if (o.lat == null || o.lng == null) continue;
+      if (mapBranch !== 'All' && o.branch !== mapBranch) continue;
+      const ck = classKey(o.classification);
+      if (mapClass !== 'All' && ck !== mapClass) continue;
+      const color = CLASS_COLOR[ck] || '#888';
+      const m = L.circleMarker([o.lat, o.lng], {
+        radius: 6,
+        color: '#fff',
+        weight: 1,
+        fillColor: color,
+        fillOpacity: 0.85,
+      });
+      m.bindPopup(
+        `<div style="font-size:12px;line-height:1.5">
+          <strong>${o.name ?? o.code ?? 'Outlet'}</strong><br/>
+          <span style="color:${color};font-weight:600">${o.classification ?? '—'}</span><br/>
+          Branch: ${o.branch ?? '—'}<br/>
+          Township: ${o.township ?? '—'}<br/>
+          Revenue: ${fmtRevenue(o.revenue)}
+        </div>`
+      );
+      clusterGroup.addLayer(m);
+      bounds.push([o.lat, o.lng]);
+      n++;
+    }
+    shownCount = n;
+    if (bounds.length) {
+      map.fitBounds(bounds, { padding: [30, 30], maxZoom: 13 });
+    }
+  }
+
+  // init map when view becomes map + lib loaded + data ready
+  $effect(() => {
+    if (view === 'map' && L && mapEl && data && !map) {
+      // mapEl now in DOM
+      setTimeout(() => {
+        initMap();
+        renderMarkers();
+        if (map) map.invalidateSize();
+      }, 0);
+    }
+  });
+
+  // re-render on filter change
+  $effect(() => {
+    mapBranch; mapClass; data;
+    if (map && clusterGroup) renderMarkers();
+  });
+
+  // fix size when switching back to map
+  $effect(() => {
+    if (view === 'map' && map) {
+      setTimeout(() => map && map.invalidateSize(), 50);
+    }
+  });
+
+  let geoOutlets = $derived((data?.outlets ?? []).filter((o: any) => o.lat != null && o.lng != null));
+  let branches = $derived([...new Set((data?.outlets ?? []).map((o: any) => o.branch).filter(Boolean))].sort());
+
+  // ---- township tables ----
   function getStatus(row: { total: number; a: number; b: number; c: number }): string {
     if (row.a > 3) return 'STRONG';
     if (row.a > 0) return 'MODERATE';
@@ -31,23 +172,13 @@
     return 'GAP';
   }
 
-  function statusColor(status: string): string {
+  function statusBadgeClass(status: string): string {
     switch (status) {
-      case 'STRONG': return '#007518';
-      case 'MODERATE': return '#ff9d00';
-      case 'WEAK': return '#be2d06';
-      case 'GAP': return '#383832';
-      default: return '#383832';
-    }
-  }
-
-  function statusBg(status: string): string {
-    switch (status) {
-      case 'STRONG': return '#00fc4022';
-      case 'MODERATE': return '#ff9d0022';
-      case 'WEAK': return '#be2d0622';
-      case 'GAP': return '#383832';
-      default: return 'transparent';
+      case 'STRONG': return 'badge badge-a';
+      case 'MODERATE': return 'badge badge-b';
+      case 'WEAK': return 'badge-info';
+      case 'GAP': return 'badge badge-c';
+      default: return 'badge badge-neutral';
     }
   }
 
@@ -98,249 +229,476 @@
 </script>
 
 <svelte:head>
-  <title>Coverage Analysis | MCP Agent</title>
+  <title>Coverage Analysis | RTM Agent</title>
 </svelte:head>
 
-<div style="padding: 2rem; max-width: 1400px; margin: 0 auto;">
+<div class="page animate-fade-in">
 
   <!-- HERO -->
-  <div style="border: 4px solid #383832; background: #383832; color: #feffd6; padding: 2rem 2.5rem; margin-bottom: 2rem; box-shadow: 6px 6px 0 #007518;">
-    <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem;">
-      <span style="font-size: 1.5rem;">&#9635;</span>
-      <h1 style="font-family: 'Space Grotesk', sans-serif; font-weight: 900; font-size: 2rem; letter-spacing: 2px; margin: 0;">
-        COVERAGE GAP ANALYSIS
-      </h1>
-    </div>
-    <p style="font-family: 'Space Grotesk', sans-serif; font-size: 0.85rem; opacity: 0.7; margin: 0; letter-spacing: 1px;">
-      TOWNSHIP-LEVEL OUTLET DISTRIBUTION AND COVERAGE STATUS
-    </p>
-  </div>
+  <header class="page-head">
+    <h1>Coverage Gap Analysis</h1>
+    <p>Outlet map plotting and township-level coverage status</p>
+  </header>
 
   {#if loading}
-    <div style="border: 2px solid #383832; padding: 3rem; text-align: center; font-family: 'Space Grotesk', monospace; font-weight: 700; letter-spacing: 2px;">
-      LOADING COVERAGE DATA...
-    </div>
+    <div class="card state-card">Loading coverage data...</div>
   {:else if error}
-    <div style="border: 2px solid #be2d06; background: #be2d0611; padding: 2rem; font-family: 'Space Grotesk', monospace; color: #be2d06; font-weight: 700;">
-      ERROR: {error}
-    </div>
+    <div class="alert alert-danger">Error: {error}</div>
   {:else if !data || !data.summary || Object.keys(data.summary).length === 0}
-    <div style="border: 2px solid #383832; padding: 3rem; text-align: center; font-family: 'Space Grotesk', monospace;">
-      <p style="font-weight: 700; font-size: 1.1rem; margin-bottom: 0.5rem;">NO COVERAGE DATA AVAILABLE</p>
-      <p style="opacity: 0.6; font-size: 0.85rem;">Run a classification job first, then return here to view coverage analysis.</p>
+    <div class="card state-card">
+      <p class="state-title">No coverage data available</p>
+      <p class="state-sub">Run a classification job first, then return here to view coverage analysis.</p>
     </div>
   {:else}
 
-    <!-- KPI CARDS -->
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 2rem;">
-      <!-- Total Townships -->
-      <div style="border: 2px solid #383832; padding: 1.25rem; background: #feffd6; box-shadow: 4px 4px 0 #383832;">
-        <div style="font-family: 'Space Grotesk', sans-serif; font-size: 0.65rem; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; opacity: 0.6; margin-bottom: 0.25rem;">TOWNSHIPS</div>
-        <div style="font-family: 'Space Grotesk', monospace; font-size: 2rem; font-weight: 900; color: #383832;">{kpis().totalTownships}</div>
-      </div>
-
-      <!-- Strong -->
-      <div style="border: 2px solid #007518; padding: 1.25rem; background: #00fc4011; box-shadow: 4px 4px 0 #007518;">
-        <div style="font-family: 'Space Grotesk', sans-serif; font-size: 0.65rem; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #007518; margin-bottom: 0.25rem;">STRONG</div>
-        <div style="font-family: 'Space Grotesk', monospace; font-size: 2rem; font-weight: 900; color: #007518;">{kpis().strong}</div>
-      </div>
-
-      <!-- Moderate -->
-      <div style="border: 2px solid #ff9d00; padding: 1.25rem; background: #ff9d0011; box-shadow: 4px 4px 0 #ff9d00;">
-        <div style="font-family: 'Space Grotesk', sans-serif; font-size: 0.65rem; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #ff9d00; margin-bottom: 0.25rem;">MODERATE</div>
-        <div style="font-family: 'Space Grotesk', monospace; font-size: 2rem; font-weight: 900; color: #ff9d00;">{kpis().moderate}</div>
-      </div>
-
-      <!-- Weak -->
-      <div style="border: 2px solid #be2d06; padding: 1.25rem; background: #be2d0611; box-shadow: 4px 4px 0 #be2d06;">
-        <div style="font-family: 'Space Grotesk', sans-serif; font-size: 0.65rem; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #be2d06; margin-bottom: 0.25rem;">WEAK</div>
-        <div style="font-family: 'Space Grotesk', monospace; font-size: 2rem; font-weight: 900; color: #be2d06;">{kpis().weak}</div>
-      </div>
-
-      <!-- Gaps -->
-      <div style="border: 2px solid #383832; padding: 1.25rem; background: #383832; color: #feffd6; box-shadow: 4px 4px 0 #9d4867;">
-        <div style="font-family: 'Space Grotesk', sans-serif; font-size: 0.65rem; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; opacity: 0.7; margin-bottom: 0.25rem;">GAPS</div>
-        <div style="font-family: 'Space Grotesk', monospace; font-size: 2rem; font-weight: 900;">{kpis().gaps}</div>
-      </div>
-
-      <!-- Total Outlets -->
-      <div style="border: 2px solid #006f7c; padding: 1.25rem; background: #006f7c11; box-shadow: 4px 4px 0 #006f7c;">
-        <div style="font-family: 'Space Grotesk', sans-serif; font-size: 0.65rem; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #006f7c; margin-bottom: 0.25rem;">TOTAL OUTLETS</div>
-        <div style="font-family: 'Space Grotesk', monospace; font-size: 2rem; font-weight: 900; color: #006f7c;">{kpis().totalOutlets.toLocaleString()}</div>
-      </div>
+    <!-- VIEW TOGGLE -->
+    <div class="view-toggle">
+      <button class="view-btn" class:active={view === 'map'} onclick={() => view = 'map'}>Map</button>
+      <button class="view-btn" class:active={view === 'tables'} onclick={() => view = 'tables'}>Tables</button>
     </div>
 
-    <!-- GEO STATUS BAR -->
-    {#if kpis().withGeo > 0 || kpis().withoutGeo > 0}
-      <div style="border: 2px solid #383832; padding: 0.75rem 1.25rem; margin-bottom: 1.5rem; display: flex; gap: 2rem; font-family: 'Space Grotesk', monospace; font-size: 0.75rem; letter-spacing: 1px; background: #feffd6;">
-        <span>GEO_MAPPED: <strong style="color: #007518;">{kpis().withGeo}</strong></span>
-        <span>NO_GEO: <strong style="color: #be2d06;">{kpis().withoutGeo}</strong></span>
-      </div>
-    {/if}
-
-    <!-- FILTER BAR -->
-    <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;">
-      {#each ['All', 'STRONG', 'MODERATE', 'WEAK', 'GAP'] as status}
-        <button
-          onclick={() => filterStatus = status}
-          style="
-            font-family: 'Space Grotesk', sans-serif;
-            font-weight: 700;
-            font-size: 0.75rem;
-            letter-spacing: 1px;
-            padding: 0.5rem 1rem;
-            border: 2px solid {status === 'All' ? '#383832' : statusColor(status)};
-            background: {filterStatus === status ? (status === 'All' ? '#383832' : statusColor(status)) : 'transparent'};
-            color: {filterStatus === status ? '#feffd6' : (status === 'All' ? '#383832' : statusColor(status))};
-            cursor: pointer;
-            text-transform: uppercase;
-          "
-        >
-          {status}
-        </button>
-      {/each}
-    </div>
-
-    <!-- TOWNSHIP TABLE -->
-    <div style="border: 2px solid #383832; overflow: hidden;">
-      <!-- Table Header Bar -->
-      <div style="background: #383832; color: #feffd6; padding: 0.75rem 1.25rem; font-family: 'Space Grotesk', sans-serif; font-weight: 900; font-size: 0.85rem; letter-spacing: 2px;">
-        TOWNSHIP COVERAGE BREAKDOWN ({townships().length} AREAS)
-      </div>
-
-      <div style="overflow-x: auto;">
-        <table style="width: 100%; border-collapse: collapse; font-family: 'Space Grotesk', sans-serif;">
-          <thead>
-            <tr style="background: #feffd6; border-bottom: 2px solid #383832;">
-              {#each [
-                { key: 'name', label: 'TOWNSHIP' },
-                { key: 'total', label: 'TOTAL' },
-                { key: 'a', label: 'CLASS A' },
-                { key: 'b', label: 'CLASS B' },
-                { key: 'c', label: 'CLASS C' },
-                { key: 'status', label: 'STATUS' },
-              ] as col}
-                <th
-                  onclick={() => toggleSort(col.key)}
-                  style="
-                    padding: 0.75rem 1rem;
-                    text-align: {col.key === 'name' ? 'left' : 'center'};
-                    font-size: 0.7rem;
-                    font-weight: 700;
-                    letter-spacing: 2px;
-                    cursor: pointer;
-                    user-select: none;
-                    white-space: nowrap;
-                    border-right: 1px solid #38383222;
-                  "
-                >
-                  {col.label}
-                  {#if sortCol === col.key}
-                    <span style="opacity: 0.5;">{sortDir === 'asc' ? ' ^' : ' v'}</span>
-                  {/if}
-                </th>
+    {#if view === 'map'}
+      <!-- ===== MAP VIEW ===== -->
+      {#if geoOutlets.length === 0}
+        <div class="card state-card">
+          <p class="state-title">No geo-coded outlets</p>
+          <p class="state-sub">This job has no Latitude/Longitude data. Re-run a classification with a CSV that includes Latitude &amp; Longitude columns.</p>
+        </div>
+      {:else}
+        <!-- MAP FILTERS -->
+        <div class="map-controls">
+          <label class="ctl">
+            <span>Branch</span>
+            <select bind:value={mapBranch}>
+              <option value="All">All branches</option>
+              {#each branches as b}
+                <option value={b}>{b}</option>
               {/each}
-            </tr>
-          </thead>
-          <tbody>
-            {#each townships() as row, i}
-              <tr style="border-bottom: 1px solid #38383222; background: {i % 2 === 0 ? '#feffd6' : '#feffd6cc'};">
-                <td style="padding: 0.6rem 1rem; font-weight: 700; font-size: 0.85rem; border-right: 1px solid #38383222;">
-                  {row.name}
-                </td>
-                <td style="padding: 0.6rem 1rem; text-align: center; font-family: monospace; font-weight: 700; font-size: 0.9rem; border-right: 1px solid #38383222;">
-                  {row.total}
-                </td>
-                <td style="padding: 0.6rem 1rem; text-align: center; font-family: monospace; font-weight: 700; font-size: 0.9rem; color: #007518; border-right: 1px solid #38383222;">
-                  {row.a}
-                </td>
-                <td style="padding: 0.6rem 1rem; text-align: center; font-family: monospace; font-weight: 700; font-size: 0.9rem; color: #006f7c; border-right: 1px solid #38383222;">
-                  {row.b}
-                </td>
-                <td style="padding: 0.6rem 1rem; text-align: center; font-family: monospace; font-weight: 700; font-size: 0.9rem; color: #9d4867; border-right: 1px solid #38383222;">
-                  {row.c}
-                </td>
-                <td style="padding: 0.6rem 1rem; text-align: center;">
-                  <span style="
-                    display: inline-block;
-                    padding: 0.25rem 0.75rem;
-                    font-size: 0.7rem;
-                    font-weight: 900;
-                    letter-spacing: 2px;
-                    border: 2px solid {statusColor(row.status)};
-                    background: {statusBg(row.status)};
-                    color: {row.status === 'GAP' ? '#feffd6' : statusColor(row.status)};
-                  ">
-                    {row.status}
-                  </span>
-                </td>
-              </tr>
-            {/each}
+            </select>
+          </label>
+          <label class="ctl">
+            <span>Class</span>
+            <select bind:value={mapClass}>
+              <option value="All">All classes</option>
+              <option value="A">Class A</option>
+              <option value="B">Class B</option>
+              <option value="C">Class C</option>
+              <option value="F4">F4 Wholesaler</option>
+            </select>
+          </label>
+          <div class="map-count">
+            Showing <strong>{shownCount.toLocaleString()}</strong> of {geoOutlets.length.toLocaleString()} outlets
+          </div>
+        </div>
 
-            {#if townships().length === 0}
+        <div class="map-shell card-flush">
+          <div class="map-canvas" bind:this={mapEl}></div>
+          <div class="map-legend">
+            <span class="lg"><span class="dot" style="background:#5A8F3D"></span>Class A</span>
+            <span class="lg"><span class="dot" style="background:#B5853D"></span>Class B</span>
+            <span class="lg"><span class="dot" style="background:#B5453D"></span>Class C</span>
+            <span class="lg"><span class="dot" style="background:#4A7D8C"></span>F4 Wholesaler</span>
+          </div>
+        </div>
+
+        {#if kpis().withoutGeo > 0}
+          <p class="geo-note">{kpis().withoutGeo.toLocaleString()} outlet(s) have no coordinates and are not plotted.</p>
+        {/if}
+      {/if}
+
+    {:else}
+      <!-- ===== TABLES VIEW ===== -->
+
+      <!-- KPI CARDS -->
+      <div class="grid-kpi">
+        <div class="kpi">
+          <div class="kpi-label">Townships</div>
+          <div class="kpi-value">{kpis().totalTownships}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label" style="color: var(--success);">Strong</div>
+          <div class="kpi-value" style="color: var(--success);">{kpis().strong}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label" style="color: var(--warning);">Moderate</div>
+          <div class="kpi-value" style="color: var(--warning);">{kpis().moderate}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label" style="color: var(--info);">Weak</div>
+          <div class="kpi-value" style="color: var(--info);">{kpis().weak}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label" style="color: var(--danger);">Gaps</div>
+          <div class="kpi-value" style="color: var(--danger);">{kpis().gaps}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label" style="color: var(--accent);">Total Outlets</div>
+          <div class="kpi-value">{kpis().totalOutlets.toLocaleString()}</div>
+        </div>
+      </div>
+
+      <!-- GEO STATUS BAR -->
+      {#if kpis().withGeo > 0 || kpis().withoutGeo > 0}
+        <div class="card geo-bar">
+          <span>Geo mapped: <strong style="color: var(--success);">{kpis().withGeo}</strong></span>
+          <span>No geo: <strong style="color: var(--danger);">{kpis().withoutGeo}</strong></span>
+        </div>
+      {/if}
+
+      <!-- FILTER BAR -->
+      <div class="filter-bar">
+        {#each ['All', 'STRONG', 'MODERATE', 'WEAK', 'GAP'] as status}
+          <button
+            class="filter-pill"
+            class:active={filterStatus === status}
+            onclick={() => filterStatus = status}
+          >
+            {status}
+          </button>
+        {/each}
+      </div>
+
+      <!-- TOWNSHIP TABLE -->
+      <div class="card-flush table-card">
+        <div class="data-table-head">
+          Township Coverage Breakdown ({townships().length} areas)
+        </div>
+        <div class="data-table-wrap">
+          <table class="data-table">
+            <thead>
               <tr>
-                <td colspan="6" style="padding: 2rem; text-align: center; font-family: monospace; opacity: 0.5; font-size: 0.85rem;">
-                  NO TOWNSHIPS MATCH FILTER
-                </td>
+                {#each [
+                  { key: 'name', label: 'Township' },
+                  { key: 'total', label: 'Total' },
+                  { key: 'a', label: 'Class A' },
+                  { key: 'b', label: 'Class B' },
+                  { key: 'c', label: 'Class C' },
+                  { key: 'status', label: 'Status' },
+                ] as col}
+                  <th
+                    onclick={() => toggleSort(col.key)}
+                    class="sortable"
+                    style="text-align: {col.key === 'name' ? 'left' : 'center'};"
+                  >
+                    {col.label}
+                    {#if sortCol === col.key}
+                      <span class="sort-ind">{sortDir === 'asc' ? '↑' : '↓'}</span>
+                    {/if}
+                  </th>
+                {/each}
               </tr>
-            {/if}
-          </tbody>
-        </table>
-      </div>
-    </div>
+            </thead>
+            <tbody>
+              {#each townships() as row}
+                <tr>
+                  <td class="cell-name">{row.name}</td>
+                  <td class="cell-num">{row.total}</td>
+                  <td class="cell-num" style="color: var(--class-a);">{row.a}</td>
+                  <td class="cell-num" style="color: var(--class-b);">{row.b}</td>
+                  <td class="cell-num" style="color: var(--class-c);">{row.c}</td>
+                  <td style="text-align: center;">
+                    <span class={statusBadgeClass(row.status)}>{row.status}</span>
+                  </td>
+                </tr>
+              {/each}
 
-    <!-- COVERAGE DISTRIBUTION BAR -->
-    {#if kpis().totalTownships > 0}
-      <div style="margin-top: 2rem; border: 2px solid #383832; overflow: hidden;">
-        <div style="background: #383832; color: #feffd6; padding: 0.75rem 1.25rem; font-family: 'Space Grotesk', sans-serif; font-weight: 900; font-size: 0.85rem; letter-spacing: 2px;">
-          COVERAGE DISTRIBUTION
-        </div>
-        <div style="padding: 1.5rem;">
-          <!-- Stacked bar -->
-          <div style="display: flex; height: 2.5rem; border: 2px solid #383832; overflow: hidden;">
-            {#if kpis().strong > 0}
-              <div style="width: {(kpis().strong / kpis().totalTownships) * 100}%; background: #007518; display: flex; align-items: center; justify-content: center;">
-                <span style="font-family: 'Space Grotesk', monospace; font-size: 0.7rem; font-weight: 900; color: #feffd6; letter-spacing: 1px;">{kpis().strong}</span>
-              </div>
-            {/if}
-            {#if kpis().moderate > 0}
-              <div style="width: {(kpis().moderate / kpis().totalTownships) * 100}%; background: #ff9d00; display: flex; align-items: center; justify-content: center;">
-                <span style="font-family: 'Space Grotesk', monospace; font-size: 0.7rem; font-weight: 900; color: #383832; letter-spacing: 1px;">{kpis().moderate}</span>
-              </div>
-            {/if}
-            {#if kpis().weak > 0}
-              <div style="width: {(kpis().weak / kpis().totalTownships) * 100}%; background: #be2d06; display: flex; align-items: center; justify-content: center;">
-                <span style="font-family: 'Space Grotesk', monospace; font-size: 0.7rem; font-weight: 900; color: #feffd6; letter-spacing: 1px;">{kpis().weak}</span>
-              </div>
-            {/if}
-            {#if kpis().gaps > 0}
-              <div style="width: {(kpis().gaps / kpis().totalTownships) * 100}%; background: #383832; display: flex; align-items: center; justify-content: center;">
-                <span style="font-family: 'Space Grotesk', monospace; font-size: 0.7rem; font-weight: 900; color: #feffd6; letter-spacing: 1px;">{kpis().gaps}</span>
-              </div>
-            {/if}
-          </div>
-          <!-- Legend -->
-          <div style="display: flex; gap: 1.5rem; margin-top: 0.75rem; font-family: 'Space Grotesk', sans-serif; font-size: 0.7rem; font-weight: 700; letter-spacing: 1px; flex-wrap: wrap;">
-            <span style="display: flex; align-items: center; gap: 0.4rem;">
-              <span style="width: 12px; height: 12px; background: #007518; border: 1px solid #383832; display: inline-block;"></span>
-              STRONG (A &gt; 3)
-            </span>
-            <span style="display: flex; align-items: center; gap: 0.4rem;">
-              <span style="width: 12px; height: 12px; background: #ff9d00; border: 1px solid #383832; display: inline-block;"></span>
-              MODERATE (A &gt; 0)
-            </span>
-            <span style="display: flex; align-items: center; gap: 0.4rem;">
-              <span style="width: 12px; height: 12px; background: #be2d06; border: 1px solid #383832; display: inline-block;"></span>
-              WEAK (B/C ONLY)
-            </span>
-            <span style="display: flex; align-items: center; gap: 0.4rem;">
-              <span style="width: 12px; height: 12px; background: #383832; border: 1px solid #383832; display: inline-block;"></span>
-              GAP (NO OUTLETS)
-            </span>
-          </div>
+              {#if townships().length === 0}
+                <tr>
+                  <td colspan="6" class="empty-row">No townships match filter</td>
+                </tr>
+              {/if}
+            </tbody>
+          </table>
         </div>
       </div>
+
+      <!-- COVERAGE DISTRIBUTION BAR -->
+      {#if kpis().totalTownships > 0}
+        <div class="card-flush table-card">
+          <div class="data-table-head">Coverage Distribution</div>
+          <div class="dist-body">
+            <div class="dist-bar">
+              {#if kpis().strong > 0}
+                <div class="dist-seg" style="width: {(kpis().strong / kpis().totalTownships) * 100}%; background: var(--success);">
+                  <span>{kpis().strong}</span>
+                </div>
+              {/if}
+              {#if kpis().moderate > 0}
+                <div class="dist-seg" style="width: {(kpis().moderate / kpis().totalTownships) * 100}%; background: var(--warning);">
+                  <span style="color: var(--accent-ink);">{kpis().moderate}</span>
+                </div>
+              {/if}
+              {#if kpis().weak > 0}
+                <div class="dist-seg" style="width: {(kpis().weak / kpis().totalTownships) * 100}%; background: var(--info);">
+                  <span>{kpis().weak}</span>
+                </div>
+              {/if}
+              {#if kpis().gaps > 0}
+                <div class="dist-seg" style="width: {(kpis().gaps / kpis().totalTownships) * 100}%; background: var(--danger);">
+                  <span>{kpis().gaps}</span>
+                </div>
+              {/if}
+            </div>
+            <div class="dist-legend">
+              <span class="legend-item">
+                <span class="legend-swatch" style="background: var(--success);"></span>
+                Strong (A &gt; 3)
+              </span>
+              <span class="legend-item">
+                <span class="legend-swatch" style="background: var(--warning);"></span>
+                Moderate (A &gt; 0)
+              </span>
+              <span class="legend-item">
+                <span class="legend-swatch" style="background: var(--info);"></span>
+                Weak (B/C only)
+              </span>
+              <span class="legend-item">
+                <span class="legend-swatch" style="background: var(--danger);"></span>
+                Gap (no outlets)
+              </span>
+            </div>
+          </div>
+        </div>
+      {/if}
+
     {/if}
 
   {/if}
 </div>
+
+<style>
+  .page {
+    padding: 2rem;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  .page-head {
+    margin-bottom: 1.75rem;
+  }
+  .page-head h1 {
+    font-size: 1.6rem;
+    font-weight: 600;
+    margin: 0;
+    color: var(--text);
+  }
+  .page-head p {
+    margin: 0.35rem 0 0;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+  }
+
+  .state-card {
+    padding: 3rem;
+    text-align: center;
+    color: var(--text-muted);
+  }
+  .state-title {
+    font-weight: 600;
+    font-size: 1.05rem;
+    color: var(--text);
+    margin: 0 0 0.4rem;
+  }
+  .state-sub {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin: 0;
+  }
+
+  /* view toggle */
+  .view-toggle {
+    display: flex;
+    gap: 0;
+    margin-bottom: 1.25rem;
+    border: 1px solid var(--border);
+    width: fit-content;
+  }
+  .view-btn {
+    padding: 0.5rem 1.4rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    background: var(--surface);
+    color: var(--text-muted);
+    border: none;
+    cursor: pointer;
+  }
+  .view-btn + .view-btn {
+    border-left: 1px solid var(--border);
+  }
+  .view-btn.active {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  /* map */
+  .map-controls {
+    display: flex;
+    gap: 1rem;
+    align-items: flex-end;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+  }
+  .ctl {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .ctl span {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+  }
+  .ctl select {
+    padding: 0.45rem 0.7rem;
+    font-size: 0.82rem;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .map-count {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+
+  .map-shell {
+    margin-bottom: 0.75rem;
+  }
+  .map-canvas {
+    height: 620px;
+    width: 100%;
+    z-index: 0;
+  }
+  .map-legend {
+    display: flex;
+    gap: 1.5rem;
+    padding: 0.7rem 1rem;
+    border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .lg {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+  }
+  .dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+    border: 1px solid #fff;
+  }
+  .geo-note {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin: 0.25rem 0 0;
+  }
+
+  .grid-kpi {
+    margin-bottom: 1.5rem;
+  }
+
+  .geo-bar {
+    display: flex;
+    gap: 2rem;
+    padding: 0.85rem 1.25rem;
+    margin-bottom: 1.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+
+  .filter-bar {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .table-card {
+    margin-bottom: 1.5rem;
+  }
+
+  .sortable {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .sort-ind {
+    color: var(--accent);
+    margin-left: 2px;
+  }
+
+  .cell-name {
+    font-weight: 600;
+    color: var(--text);
+  }
+  .cell-num {
+    text-align: center;
+    font-family: var(--font-mono);
+    font-weight: 600;
+  }
+
+  .badge-info {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: var(--r-pill);
+    font-size: 0.7rem;
+    font-weight: 600;
+    background: var(--info-soft);
+    color: var(--info);
+  }
+
+  .empty-row {
+    padding: 2rem;
+    text-align: center;
+    color: var(--text-faint);
+    font-size: 0.85rem;
+  }
+
+  .dist-body {
+    padding: 1.5rem;
+  }
+  .dist-bar {
+    display: flex;
+    height: 2.5rem;
+    border-radius: var(--r-md);
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .dist-seg {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .dist-seg span {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #fff;
+  }
+  .dist-legend {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 0.85rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .legend-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: var(--r-sm);
+    display: inline-block;
+  }
+</style>

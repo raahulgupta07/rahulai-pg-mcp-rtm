@@ -223,23 +223,31 @@ class JobManager:
         threshold_b: int = 95,
     ) -> str:
         """
-        Start a new job
-        Returns job_id
+        Start a new job. Retries on a job-id collision so two classifications
+        running at the same time never clash.
         """
-        job_id = self.generate_job_id()
-        self.db.create_job(
-            job_id,
-            sales_filename,
-            customer_filename,
-            item_filename,
-            threshold_a,
-            threshold_b,
-        )
-        self.current_job_id = job_id
-        return job_id
+        last_err = None
+        for _ in range(12):
+            job_id = self.generate_job_id()
+            try:
+                self.db.create_job(
+                    job_id,
+                    sales_filename,
+                    customer_filename,
+                    item_filename,
+                    threshold_a,
+                    threshold_b,
+                )
+                self.current_job_id = job_id
+                return job_id
+            except Exception as e:  # PK collision under concurrency → retry
+                last_err = e
+        raise RuntimeError(f"Could not allocate a job id: {last_err}")
 
-    def create_excel_report(self, results_df: pd.DataFrame, workload_df: pd.DataFrame = None) -> bytes:
-        """Create multi-sheet Excel report with professional styling and per-branch breakdown"""
+    def create_excel_report(self, results_df: pd.DataFrame, workload_df: pd.DataFrame = None,
+                            meta: dict = None, comparison: dict = None) -> bytes:
+        """Create multi-sheet Excel report with professional styling, per-branch
+        breakdown, a run-info stamp, and a vs-previous-run comparison."""
         buf = io.BytesIO()
         wb = openpyxl.Workbook()
 
@@ -248,7 +256,7 @@ class JobManager:
 
         # ── Sheet 1: All Results ──
         ws = wb.create_sheet("All Results")
-        _style_sheet(ws, results_df, "MCP AGENT \u2014 ALL OUTLET RESULTS")
+        _style_sheet(ws, results_df, "RTM AGENT \u2014 ALL OUTLET RESULTS")
 
         # ── Sheet 2: Overall Summary ──
         cus_col = "Cus.Code" if "Cus.Code" in results_df.columns else "Cus_Code"
@@ -342,55 +350,90 @@ class JobManager:
             ws = wb.create_sheet("Seller Workload")
             _style_sheet(ws, workload_df, "SELLER WORKLOAD ANALYSIS")
 
+        # ── vs Previous Run comparison ──
+        if comparison and comparison.get("has_previous"):
+            cmp_cols = ["Metric", "This Run", "Previous Run", "Change", "Change %", "Remark"]
+
+            def cmp_df(rows):
+                return pd.DataFrame([{
+                    "Metric": r["metric"],
+                    "This Run": r["current"],
+                    "Previous Run": r["previous"],
+                    "Change": r["change"],
+                    "Change %": r["pct"],
+                    "Remark": r["remark"],
+                } for r in rows], columns=cmp_cols)
+
+            summ = list(comparison.get("summary", []))
+            mv = comparison.get("movement", {})
+            for label, key in [
+                ("Outlets Upgraded", "upgraded"), ("Outlets Downgraded", "downgraded"),
+                ("Outlets Unchanged", "unchanged"), ("New Outlets", "new"),
+                ("Lost Outlets", "lost"),
+            ]:
+                summ.append({"metric": label, "current": mv.get(key, 0),
+                             "previous": "", "change": "", "pct": "", "remark": ""})
+            prev_id = comparison.get("previous", {}).get("job_id", "")
+            ws = wb.create_sheet("Run Comparison")
+            _style_sheet(ws, cmp_df(summ), f"THIS RUN vs PREVIOUS — {prev_id}")
+
+            if comparison.get("by_channel"):
+                ws = wb.create_sheet("Compare Channels")
+                _style_sheet(ws, cmp_df(comparison["by_channel"]), "OUTLETS BY CHANNEL — vs PREVIOUS RUN")
+            if comparison.get("by_branch"):
+                ws = wb.create_sheet("Compare Branches")
+                _style_sheet(ws, cmp_df(comparison["by_branch"]), "OUTLETS BY BRANCH — vs PREVIOUS RUN")
+
+        # ── Run Info (placed first) ──
+        if meta:
+            info_df = pd.DataFrame([
+                {"Field": "Job ID", "Value": str(meta.get("job_id", ""))},
+                {"Field": "Run date", "Value": str(meta.get("run_date", ""))},
+                {"Field": "Run by", "Value": str(meta.get("run_by", ""))},
+                {"Field": "Run by — user ID", "Value": str(meta.get("run_by_id", ""))},
+                {"Field": "Rule config version", "Value": str(meta.get("rule_version", ""))},
+                {"Field": "Rules last modified", "Value": str(meta.get("rule_modified_at", ""))},
+                {"Field": "Rules modified by", "Value": str(meta.get("rule_modified_by", ""))},
+                {"Field": "LLM tokens used", "Value": str(meta.get("llm_tokens", ""))},
+                {"Field": "LLM cost (USD)", "Value": str(meta.get("llm_cost", ""))},
+            ], columns=["Field", "Value"])
+            ws = wb.create_sheet("Run Info", 0)
+            _style_sheet(ws, info_df, "RUN INFORMATION")
+
         wb.save(buf)
         return buf.getvalue()
 
     def complete_job(
         self,
+        job_id: str,
         results_df: pd.DataFrame,
         date_from: str = None,
         date_to: str = None,
         result_excel: bytes = None,
         workload_df: pd.DataFrame = None,
     ) -> bool:
-        """
-        Mark job as completed with results
-        """
-        if not self.current_job_id:
-            raise ValueError("No active job to complete")
+        """Mark a job completed and persist its results. job_id is explicit so
+        concurrent classifications never clobber each other."""
+        if not job_id:
+            raise ValueError("No job_id given to complete_job")
 
-        # Save results to database
-        self.db.update_job_results(self.current_job_id, results_df, date_from, date_to)
+        self.db.update_job_results(job_id, results_df, date_from, date_to)
 
-        # Create Excel report if not provided
         if result_excel is None:
             result_excel = self.create_excel_report(results_df, workload_df=workload_df)
 
-        # Save Excel file
-        excel_path = os.path.join(self.outputs_dir, f"{self.current_job_id}.xlsx")
+        excel_path = os.path.join(self.outputs_dir, f"{job_id}.xlsx")
         with open(excel_path, "wb") as f:
             f.write(result_excel)
 
-            # Update job with result path
-            conn = self.db._get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE jobs SET result_path = ? WHERE job_id = ?
-            """,
-                (excel_path, self.current_job_id),
-            )
-            conn.commit()
-            conn.close()
-
+        self.db.set_job_result_path(job_id, excel_path)
         return True
 
-    def fail_job(self, error_message: str) -> bool:
-        """Mark job as failed"""
-        if not self.current_job_id:
+    def fail_job(self, job_id: str, error_message: str) -> bool:
+        """Mark a job failed (job_id explicit — concurrency-safe)."""
+        if not job_id:
             return False
-
-        self.db.update_job_status(self.current_job_id, "failed", error_message)
+        self.db.update_job_status(job_id, "failed", error_message)
         return True
 
     def get_current_job_id(self) -> Optional[str]:

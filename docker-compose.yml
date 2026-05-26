@@ -1,11 +1,34 @@
 services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: rtm
+      POSTGRES_PASSWORD: rtm
+      POSTGRES_DB: rtm
+    volumes:
+      - pgdata:/var/lib/postgresql      # PG18 images store data under this path
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rtm -d rtm"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
   mcp-agent:
     build: .
     ports:
-      - "8001:8001"
+      - "8011:8001"
     volumes:
       - ./data:/app/data
       - ./outputs:/app/outputs
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgresql://rtm:rtm@postgres:5432/rtm
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  pgdata:

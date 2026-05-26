@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getJobs, getJob, exportExcel } from '$lib/api';
+  import { getJobs, getJob, exportExcel, getUsersBasic, getJobShares, shareJob } from '$lib/api';
   import ChapterHeading from '$lib/components/ChapterHeading.svelte';
   import KpiCard from '$lib/components/KpiCard.svelte';
   import DataTable from '$lib/components/DataTable.svelte';
@@ -18,6 +18,8 @@
     branches: string;
     thresholdA: string;
     thresholdB: string;
+    llmCost: number;
+    llmTokens: number;
   }
 
   let jobs = $state<JobRow[]>([]);
@@ -34,22 +36,80 @@
   let searchQuery = $state('');
   let classFilter = $state('All');
 
+  // Share modal state
+  let shareJobId = $state<string | null>(null);
+  let shareUsers = $state<{ id: number; username: string; display_name: string }[]>([]);
+  let shareSelectedIds = $state<number[]>([]);
+  let shareLoading = $state(false);
+  let shareSaving = $state(false);
+  let shareError = $state('');
+
   $effect(() => {
     loadJobs();
   });
 
+  async function openShare(jobId: string) {
+    shareJobId = jobId;
+    shareLoading = true;
+    shareSaving = false;
+    shareError = '';
+    shareUsers = [];
+    shareSelectedIds = [];
+    try {
+      const [users, shares] = await Promise.all([getUsersBasic(), getJobShares(jobId)]);
+      shareUsers = Array.isArray(users) ? users : [];
+      shareSelectedIds = Array.isArray(shares?.user_ids) ? [...shares.user_ids] : [];
+    } catch (e: any) {
+      shareError = e?.message || 'Failed to load share settings';
+    } finally {
+      shareLoading = false;
+    }
+  }
+
+  function closeShare() {
+    shareJobId = null;
+    shareUsers = [];
+    shareSelectedIds = [];
+    shareLoading = false;
+    shareSaving = false;
+    shareError = '';
+  }
+
+  function toggleShareUser(userId: number) {
+    shareSelectedIds = shareSelectedIds.includes(userId)
+      ? shareSelectedIds.filter(id => id !== userId)
+      : [...shareSelectedIds, userId];
+  }
+
+  async function saveShare() {
+    if (!shareJobId) return;
+    shareSaving = true;
+    shareError = '';
+    try {
+      await shareJob(shareJobId, shareSelectedIds);
+      closeShare();
+    } catch (e: any) {
+      shareError = e?.message || 'Failed to save share';
+      shareSaving = false;
+    }
+  }
+
+  function onShareKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') closeShare();
+  }
+
   function fmtRevenue(n: number): string {
-    if (n >= 1e9) return `$${(n / 1e9).toFixed(1)}B`;
-    if (n >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
-    if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
-    return `$${n.toLocaleString()}`;
+    if (n >= 1e9) return `Ks ${(n / 1e9).toFixed(1)}B`;
+    if (n >= 1e6) return `Ks ${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e3) return `Ks ${(n / 1e3).toFixed(1)}K`;
+    return `Ks ${n.toLocaleString()}`;
   }
 
   function fmtNum(n: number): string {
-    if (n >= 1e9) return `$${(n / 1e9).toFixed(1)}B`;
-    if (n >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
-    if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
-    return `$${n.toLocaleString()}`;
+    if (n >= 1e9) return `Ks ${(n / 1e9).toFixed(1)}B`;
+    if (n >= 1e6) return `Ks ${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e3) return `Ks ${(n / 1e3).toFixed(1)}K`;
+    return `Ks ${n.toLocaleString()}`;
   }
 
   function fmtPct(n: number): string {
@@ -66,20 +126,20 @@
     }
   }
 
-  function statusColor(status: string): { bg: string; text: string } {
+  function statusClass(status: string): string {
     switch (status) {
-      case 'completed': return { bg: '#007518', text: '#ffffff' };
-      case 'failed': return { bg: '#be2d06', text: '#ffffff' };
-      case 'processing': return { bg: '#ff9d00', text: '#383832' };
-      default: return { bg: '#828179', text: '#ffffff' };
+      case 'completed': return 'status-completed';
+      case 'failed': return 'status-failed';
+      case 'processing': return 'status-processing';
+      default: return 'status-default';
     }
   }
 
   function renderMarkdown(text: string): string {
     if (!text) return '';
     return text
-      .replace(/### (.*?)$/gm, '<h3 style="font-size:14px;font-weight:900;margin:16px 0 8px;color:#383832;">$1</h3>')
-      .replace(/## (.*?)$/gm, '<h2 style="font-size:16px;font-weight:900;margin:16px 0 8px;color:#383832;">$1</h2>')
+      .replace(/### (.*?)$/gm, '<h3 style="font-size:14px;font-weight:600;margin:16px 0 8px;color:var(--text);">$1</h3>')
+      .replace(/## (.*?)$/gm, '<h2 style="font-size:16px;font-weight:600;margin:16px 0 8px;color:var(--text);">$1</h2>')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(.*?)\*/g, '<em>$1</em>')
       .replace(/^- (.*?)$/gm, '<div style="padding-left:16px;margin:4px 0;">$1</div>')
@@ -115,6 +175,8 @@
         branches: j.branches ? (Array.isArray(j.branches) ? j.branches.length : j.branches) : '--',
         thresholdA: `${j.threshold_a ?? 80}%`,
         thresholdB: `${j.threshold_b ?? 95}%`,
+        llmCost: Number(j.llm_cost ?? 0),
+        llmTokens: Number(j.llm_prompt_tokens ?? 0) + Number(j.llm_completion_tokens ?? 0),
       }));
     } catch (e: any) {
       error = e?.message || 'Failed to load jobs';
@@ -311,7 +373,7 @@
       }));
   });
 
-  const tabLabels = ['DASHBOARD', 'DATA EXPLORER', 'ANALYTICS', 'EXPORT'];
+  const tabLabels = ['Dashboard', 'Data Explorer', 'Analytics', 'Export'];
 </script>
 
 {#if selectedJob || detailLoading || detailError}
@@ -320,51 +382,43 @@
   <!-- ============================================================ -->
 
   <!-- Back button -->
-  <button
-    onclick={backToList}
-    style="margin-bottom:16px;padding:8px 20px;font-size:11px;font-weight:900;letter-spacing:0.08em;background:#383832;color:#feffd6;border:2px solid #383832;box-shadow:3px 3px 0 #383832;cursor:pointer;transition:all 0.15s;"
-    onmouseenter={(e) => { e.currentTarget.style.background = '#00fc40'; e.currentTarget.style.color = '#383832'; }}
-    onmouseleave={(e) => { e.currentTarget.style.background = '#383832'; e.currentTarget.style.color = '#feffd6'; }}
-  >
-    &larr; BACK TO HISTORY
+  <button class="btn-ghost btn-sm" style="margin-bottom:16px;" onclick={backToList}>
+    ← Back to history
   </button>
 
   {#if detailLoading}
     <!-- Loading state -->
-    <div style="background:#383832;color:#feffd6;padding:16px 24px;margin-bottom:24px;border-bottom:4px solid #383832;border-right:4px solid #383832;">
-      <div style="font-size:1.5rem;font-weight:900;letter-spacing:-0.03em;">LOADING JOB...</div>
+    <div class="page-head">
+      <h1 class="page-title">Loading job…</h1>
     </div>
-    <div style="text-align:center;padding:48px;">
-      <div style="display:flex;justify-content:center;gap:6px;margin-bottom:16px;">
-        <span style="width:8px;height:8px;background:#007518;animation:bounce 0.6s ease-in-out infinite;"></span>
-        <span style="width:8px;height:8px;background:#ff9d00;animation:bounce 0.6s ease-in-out infinite;animation-delay:0.15s;"></span>
-        <span style="width:8px;height:8px;background:#be2d06;animation:bounce 0.6s ease-in-out infinite;animation-delay:0.3s;"></span>
+    <div class="loading-block">
+      <div class="loading-dots">
+        <span style="background:var(--class-a);"></span>
+        <span style="background:var(--class-b);animation-delay:0.15s;"></span>
+        <span style="background:var(--class-c);animation-delay:0.3s;"></span>
       </div>
-      <div style="font-size:11px;font-weight:700;color:#828179;letter-spacing:0.08em;">LOADING JOB RESULTS...</div>
+      <div class="loading-text">Loading job results…</div>
     </div>
 
   {:else if detailError}
     <!-- Error state -->
-    <div style="padding:16px;background:#be2d06;color:white;font-size:12px;font-weight:700;border:2px solid #383832;">
-      ERROR: {detailError}
-    </div>
+    <div class="alert alert-danger">{detailError}</div>
 
   {:else if selectedJob}
     <!-- Hero with job ID -->
-    <div style="background:#383832;color:#feffd6;padding:16px 24px;margin-bottom:24px;border-bottom:4px solid #383832;border-right:4px solid #383832;">
-      <div style="font-size:1.5rem;font-weight:900;letter-spacing:-0.03em;">JOB: {selectedJob.job_id}</div>
-      <div style="font-size:11px;opacity:0.75;margin-top:4px;">
-        {fmtDate(selectedJob.created_at)} &mdash; STATUS: {(selectedJob.status || '').toUpperCase()} &mdash; {selectedResults.length} OUTLETS
-      </div>
+    <div class="page-head">
+      <h1 class="page-title"><span class="mono">{selectedJob.job_id}</span></h1>
+      <p class="page-sub">
+        {fmtDate(selectedJob.created_at)} · Status: {(selectedJob.status || '').toUpperCase()} · {selectedResults.length} outlets
+      </p>
     </div>
 
     <!-- Controls row -->
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
+    <div class="controls-row">
       <!-- Branch filter -->
-      <div style="display:flex;align-items:center;gap:8px;">
-        <span style="font-size:10px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:#383832;">BRANCH:</span>
-        <select bind:value={selectedBranch}
-          style="padding:6px 12px;font-size:11px;font-weight:700;background:white;border:2px solid #383832;color:#383832;cursor:pointer;">
+      <div class="control-group">
+        <span class="label" style="margin:0;">Branch</span>
+        <select class="select" style="width:auto;" bind:value={selectedBranch}>
           <option>All Branches</option>
           {#each branches as branch}
             <option>{branch}</option>
@@ -373,32 +427,28 @@
       </div>
 
       <!-- Thresholds info -->
-      <div style="display:flex;align-items:center;gap:12px;">
-        <span style="font-size:10px;font-weight:700;color:#828179;letter-spacing:0.06em;">
-          THRESHOLDS: A={selectedJob.threshold_a ?? 80}% / B={selectedJob.threshold_b ?? 95}%
-        </span>
+      <div class="threshold-info">
+        Thresholds: A={selectedJob.threshold_a ?? 80}% / B={selectedJob.threshold_b ?? 95}%
       </div>
     </div>
 
     <!-- KPI cards grid -->
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px;">
-      <KpiCard label="Total Outlets" value={String(kpis.total)} subtitle="{kpis.branchCount} branches" accent="#383832" />
-      <KpiCard label="Class A" value={String(kpis.classA)} subtitle="{kpis.total > 0 ? fmtPct((kpis.classA / kpis.total) * 100) : '0%'} of total" accent="#007518" />
-      <KpiCard label="Class B" value={String(kpis.classB)} subtitle="{kpis.total > 0 ? fmtPct((kpis.classB / kpis.total) * 100) : '0%'} of total" accent="#ff9d00" />
-      <KpiCard label="Class C" value={String(kpis.classC)} subtitle="{kpis.total > 0 ? fmtPct((kpis.classC / kpis.total) * 100) : '0%'} of total" accent="#be2d06" />
-      <KpiCard label="Wholesalers" value={String(kpis.wholesalers)} subtitle="F4 flagged" accent="#006f7c" />
-      <KpiCard label="Total Revenue" value={fmtNum(kpis.revenue)} subtitle="2-year aggregate" accent="#007518" />
+    <div class="grid-kpi" style="margin-bottom:24px;">
+      <KpiCard label="Total Outlets" value={String(kpis.total)} subtitle="{kpis.branchCount} branches" accent="var(--text)" />
+      <KpiCard label="Class A" value={String(kpis.classA)} subtitle="{kpis.total > 0 ? fmtPct((kpis.classA / kpis.total) * 100) : '0%'} of total" accent="var(--class-a)" />
+      <KpiCard label="Class B" value={String(kpis.classB)} subtitle="{kpis.total > 0 ? fmtPct((kpis.classB / kpis.total) * 100) : '0%'} of total" accent="var(--class-b)" />
+      <KpiCard label="Class C" value={String(kpis.classC)} subtitle="{kpis.total > 0 ? fmtPct((kpis.classC / kpis.total) * 100) : '0%'} of total" accent="var(--class-c)" />
+      <KpiCard label="Wholesalers" value={String(kpis.wholesalers)} subtitle="F4 flagged" accent="var(--class-f4)" />
+      <KpiCard label="Total Revenue" value={fmtNum(kpis.revenue)} subtitle="2-year aggregate" accent="var(--class-a)" />
     </div>
 
     <!-- Tab bar -->
-    <div style="display:flex;gap:0;margin-bottom:24px;border-bottom:3px solid #383832;flex-wrap:wrap;">
+    <div class="tab-bar" style="margin-bottom:24px;">
       {#each tabLabels as label, i}
         <button
+          class="tab"
+          class:active={activeTab === i}
           onclick={() => activeTab = i}
-          style="padding:10px 20px;font-size:10px;font-weight:900;letter-spacing:0.1em;text-transform:uppercase;border:none;cursor:pointer;transition:all 0.15s;
-            {activeTab === i
-              ? 'background:#383832;color:#feffd6;'
-              : 'background:transparent;color:#65655e;'}"
         >
           {label}
         </button>
@@ -420,20 +470,16 @@
 
     <!-- ---- TAB 1: DATA EXPLORER ---- -->
     {:else if activeTab === 1}
-      <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
-        <select bind:value={classFilter}
-          style="padding:6px 12px;font-size:11px;font-weight:700;background:white;border:2px solid #383832;color:#383832;cursor:pointer;">
+      <div class="explorer-controls">
+        <select class="select" style="width:auto;" bind:value={classFilter}>
           <option>All</option>
           <option>Class A</option>
           <option>Class B</option>
           <option>Class C</option>
           <option>Class A Local (F4)</option>
         </select>
-        <input type="text" bind:value={searchQuery} placeholder="Search outlet name or code..."
-          style="flex:1;min-width:200px;padding:6px 12px;font-size:11px;border:2px solid #383832;background:white;color:#383832;" />
-        <div style="font-size:10px;font-weight:800;color:#828179;letter-spacing:0.06em;display:flex;align-items:center;">
-          {explorerData().length} RESULTS
-        </div>
+        <input class="input" type="text" bind:value={searchQuery} placeholder="Search outlet name or code…" style="flex:1;min-width:200px;" />
+        <div class="result-count">{explorerData().length} results</div>
       </div>
 
       <DataTable title="ALL OUTLETS" data={explorerData()} columns={explorerCols} maxHeight="600px" />
@@ -441,54 +487,54 @@
     <!-- ---- TAB 2: ANALYTICS ---- -->
     {:else if activeTab === 2}
       <ChapterHeading title="Branch Revenue Comparison" subtitle="Relative revenue by branch" />
-      <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;padding:24px;">
+      <div class="card chart-card">
         {#each branchBars() as bar}
-          <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
-            <div style="min-width:120px;font-size:10px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:#383832;text-align:right;">{bar.name}</div>
-            <div style="flex:1;height:20px;background:#ebe8dd;">
-              <div style="height:100%;width:{bar.pct}%;background:#007518;transition:width 0.5s;"></div>
+          <div class="bar-row">
+            <div class="bar-label">{bar.name}</div>
+            <div class="bar-track">
+              <div class="bar-fill" style="width:{bar.pct}%;background:var(--class-a);"></div>
             </div>
-            <div style="min-width:80px;font-size:10px;font-weight:700;color:#383832;">{fmtNum(bar.revenue)}</div>
+            <div class="bar-value">{fmtNum(bar.revenue)}</div>
           </div>
         {/each}
         {#if branchBars().length === 0}
-          <div style="text-align:center;color:#828179;font-size:11px;padding:24px;">No branch data available</div>
+          <div class="empty-chart">No branch data available</div>
         {/if}
       </div>
 
       <div style="margin-top:24px;"></div>
       <ChapterHeading title="Period Comparison" subtitle="Aggregate sales by time window" />
-      <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;padding:24px;">
+      <div class="card chart-card">
         {#each periodBars() as bar}
-          <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
-            <div style="min-width:60px;font-size:11px;font-weight:900;letter-spacing:0.06em;color:#383832;text-align:right;">{bar.period}</div>
-            <div style="flex:1;height:24px;background:#ebe8dd;">
-              <div style="height:100%;width:{bar.pct}%;background:#006f7c;transition:width 0.5s;"></div>
+          <div class="bar-row">
+            <div class="bar-label bar-label-period">{bar.period}</div>
+            <div class="bar-track bar-track-tall">
+              <div class="bar-fill" style="width:{bar.pct}%;background:var(--info);"></div>
             </div>
-            <div style="min-width:90px;font-size:11px;font-weight:700;color:#383832;">{fmtNum(bar.value)}</div>
+            <div class="bar-value">{fmtNum(bar.value)}</div>
           </div>
         {/each}
         {#if periodBars().length === 0}
-          <div style="text-align:center;color:#828179;font-size:11px;padding:24px;">No period data available</div>
+          <div class="empty-chart">No period data available</div>
         {/if}
       </div>
 
       <!-- Class distribution breakdown -->
       <div style="margin-top:24px;"></div>
       <ChapterHeading title="Class Distribution" subtitle="Outlet count and revenue share by class" />
-      <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;padding:24px;">
+      <div class="card chart-card">
         {#each [
-          { label: 'CLASS A', count: kpis.classA, color: '#007518' },
-          { label: 'CLASS B', count: kpis.classB, color: '#ff9d00' },
-          { label: 'CLASS C', count: kpis.classC, color: '#be2d06' },
+          { label: 'Class A', count: kpis.classA, color: 'var(--class-a)' },
+          { label: 'Class B', count: kpis.classB, color: 'var(--class-b)' },
+          { label: 'Class C', count: kpis.classC, color: 'var(--class-c)' },
         ] as cls}
           {@const pct = kpis.total > 0 ? (cls.count / kpis.total * 100) : 0}
-          <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
-            <div style="min-width:80px;font-size:11px;font-weight:900;letter-spacing:0.06em;color:{cls.color};text-align:right;">{cls.label}</div>
-            <div style="flex:1;height:24px;background:#ebe8dd;">
-              <div style="height:100%;width:{pct}%;background:{cls.color};transition:width 0.5s;"></div>
+          <div class="bar-row">
+            <div class="bar-label bar-label-period" style="color:{cls.color};">{cls.label}</div>
+            <div class="bar-track bar-track-tall">
+              <div class="bar-fill" style="width:{pct}%;background:{cls.color};"></div>
             </div>
-            <div style="min-width:100px;font-size:10px;font-weight:700;color:#383832;">{cls.count} ({fmtPct(pct)})</div>
+            <div class="bar-value">{cls.count} ({fmtPct(pct)})</div>
           </div>
         {/each}
       </div>
@@ -496,46 +542,38 @@
     <!-- ---- TAB 3: EXPORT ---- -->
     {:else if activeTab === 3}
       <ChapterHeading title="Export Results" subtitle="Download classified data" />
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;">
+      <div class="export-grid">
         <!-- Excel export -->
-        <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;">
-          <div style="padding:12px 16px;background:#383832;color:#feffd6;font-size:11px;font-weight:900;letter-spacing:0.1em;">EXCEL EXPORT (.XLSX)</div>
-          <div style="padding:20px;">
-            <div style="font-size:11px;color:#383832;margin-bottom:16px;line-height:1.5;">
-              Multi-sheet workbook with:
-            </div>
-            <ul style="margin:0 0 16px 0;padding-left:16px;font-size:11px;color:#65655e;">
+        <div class="card export-card">
+          <div class="export-head">Excel export (.xlsx)</div>
+          <div class="export-body">
+            <div class="export-desc">Multi-sheet workbook with:</div>
+            <ul class="export-list">
               <li>All Outlets (classified)</li>
               <li>Branch Summary</li>
               <li>Class A / B / C sheets</li>
               <li>AI Insights</li>
               <li>Pipeline Log</li>
             </ul>
-            <button
-              onclick={() => exportExcel(selectedJob.job_id)}
-              style="width:100%;padding:10px;font-size:11px;font-weight:900;letter-spacing:0.1em;background:#00fc40;color:#383832;border:2px solid #383832;box-shadow:3px 3px 0 #383832;cursor:pointer;transition:all 0.15s;"
-              onmouseenter={(e) => { e.currentTarget.style.boxShadow = '1px 1px 0 #383832'; e.currentTarget.style.transform = 'translate(2px,2px)'; }}
-              onmouseleave={(e) => { e.currentTarget.style.boxShadow = '3px 3px 0 #383832'; e.currentTarget.style.transform = 'translate(0,0)'; }}
-            >
-              DOWNLOAD EXCEL
+            <button class="btn btn-block" onclick={() => exportExcel(selectedJob.job_id)}>
+              Download Excel
             </button>
           </div>
         </div>
 
         <!-- CSV export -->
-        <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;">
-          <div style="padding:12px 16px;background:#383832;color:#feffd6;font-size:11px;font-weight:900;letter-spacing:0.1em;">CSV EXPORT (.CSV)</div>
-          <div style="padding:20px;">
-            <div style="font-size:11px;color:#383832;margin-bottom:16px;line-height:1.5;">
-              Flat file export with all columns:
-            </div>
-            <ul style="margin:0 0 16px 0;padding-left:16px;font-size:11px;color:#65655e;">
+        <div class="card export-card">
+          <div class="export-head">CSV export (.csv)</div>
+          <div class="export-body">
+            <div class="export-desc">Flat file export with all columns:</div>
+            <ul class="export-list">
               <li>All classification fields</li>
               <li>Sales aggregates (2Yr/12M/6M/3M)</li>
               <li>AI enrichment columns</li>
               <li>Contribution percentages</li>
             </ul>
             <button
+              class="btn btn-ghost btn-block"
               onclick={() => {
                 if (!selectedResults.length) return;
                 const header = explorerCols.join(',');
@@ -549,11 +587,8 @@
                 a.click();
                 URL.revokeObjectURL(url);
               }}
-              style="width:100%;padding:10px;font-size:11px;font-weight:900;letter-spacing:0.1em;background:#006f7c;color:white;border:2px solid #383832;box-shadow:3px 3px 0 #383832;cursor:pointer;transition:all 0.15s;"
-              onmouseenter={(e) => { e.currentTarget.style.boxShadow = '1px 1px 0 #383832'; e.currentTarget.style.transform = 'translate(2px,2px)'; }}
-              onmouseleave={(e) => { e.currentTarget.style.boxShadow = '3px 3px 0 #383832'; e.currentTarget.style.transform = 'translate(0,0)'; }}
             >
-              DOWNLOAD CSV
+              Download CSV
             </button>
           </div>
         </div>
@@ -566,98 +601,91 @@
   <!-- LIST VIEW -->
   <!-- ============================================================ -->
 
-  <!-- HERO BOX -->
-  <div style="background:#383832;color:#feffd6;padding:16px 24px;margin-bottom:24px;border-bottom:4px solid #383832;border-right:4px solid #383832;">
-    <div style="font-size:1.5rem;font-weight:900;letter-spacing:-0.03em;">JOB HISTORY</div>
-    <div style="font-size:11px;opacity:0.75;margin-top:4px;">PAST CLASSIFICATION RUNS &mdash; CLICK ANY ROW TO VIEW RESULTS</div>
+  <div class="page-head">
+    <h1 class="page-title">Job History</h1>
+    <p class="page-sub">Past classification runs — click any row to view results</p>
   </div>
 
   {#if loading}
-    <div style="margin-bottom:24px;">
-      <!-- Skeleton title bar -->
-      <div style="height:44px;background:#383832;margin-bottom:0;"></div>
-      <!-- Skeleton rows -->
+    <div class="card-flush" style="overflow:hidden;">
+      <div class="data-table-head">Jobs</div>
       {#each [1,2,3,4,5] as _}
-        <div style="display:flex;gap:12px;padding:12px 16px;border-bottom:1px solid #ebe8dd;background:white;">
-          {#each [120,80,60,50,80,70] as w}
-            <div style="height:14px;width:{w}px;background:#ebe8dd;animation:skeleton-pulse 1.5s ease-in-out infinite;"></div>
+        <div class="skeleton-row">
+          {#each [120,80,60,50,80,60,70] as w}
+            <div class="skeleton" style="height:14px;width:{w}px;"></div>
           {/each}
         </div>
       {/each}
     </div>
   {:else if error}
-    <div style="padding:16px;background:#be2d06;color:white;font-size:12px;font-weight:700;border:2px solid #383832;">
-      ERROR: {error}
-    </div>
+    <div class="alert alert-danger">{error}</div>
   {:else if jobs.length === 0}
-    <div style="text-align:center;padding:48px;">
-      <div style="font-size:14px;font-weight:900;color:#383832;letter-spacing:0.06em;margin-bottom:8px;">NO JOBS YET</div>
-      <div style="font-size:11px;color:#828179;">Run a classification first to see results here.</div>
-      <a href="/" style="display:inline-block;margin-top:16px;padding:10px 24px;font-size:11px;font-weight:900;letter-spacing:0.1em;background:#00fc40;color:#383832;border:2px solid #383832;box-shadow:3px 3px 0 #383832;text-decoration:none;">
-        GO TO CLASSIFY
+    <div class="empty-state">
+      <div class="empty-title">No jobs yet</div>
+      <div class="empty-desc">Run a classification first to see results here.</div>
+      <a href="/" class="btn" style="margin-top:16px;text-decoration:none;">
+        Go to Classify
       </a>
     </div>
   {:else}
     <ChapterHeading title="All Runs" subtitle="{jobs.length} classification jobs on record" />
 
-    <!-- Job cards / table -->
-    <div style="border:3px solid #383832;box-shadow:4px 4px 0 #383832;overflow:hidden;">
-      <div style="padding:8px 12px;background:#383832;color:#feffd6;font-size:10px;font-weight:900;letter-spacing:0.1em;display:flex;justify-content:space-between;">
-        <span>JOBS</span>
-        <span style="opacity:0.7;">{jobs.length} ROWS</span>
+    <!-- Job table -->
+    <div class="data-table-wrap">
+      <div class="data-table-head">
+        <span>Jobs</span>
+        <span class="head-count">{jobs.length} rows</span>
       </div>
-      <div style="max-height:700px;overflow-y:auto;">
-        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <div class="table-scroll">
+        <table class="data-table">
           <thead>
             <tr>
-              <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:left;font-size:10px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#383832;border-bottom:2px solid #383832;white-space:nowrap;">JOB ID</th>
-              <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:left;font-size:10px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#383832;border-bottom:2px solid #383832;white-space:nowrap;">DATE</th>
-              <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:left;font-size:10px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#383832;border-bottom:2px solid #383832;white-space:nowrap;">STATUS</th>
-              <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:right;font-size:10px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#383832;border-bottom:2px solid #383832;white-space:nowrap;">OUTLETS</th>
-              <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:center;font-size:10px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#383832;border-bottom:2px solid #383832;white-space:nowrap;">A / B / C</th>
-              <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:center;font-size:10px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#383832;border-bottom:2px solid #383832;white-space:nowrap;">ACTION</th>
+              <th>Job ID</th>
+              <th>Date</th>
+              <th>Status</th>
+              <th style="text-align:right;">Outlets</th>
+              <th style="text-align:center;">A / B / C</th>
+              <th style="text-align:right;">LLM Cost</th>
+              <th style="text-align:center;">Action</th>
             </tr>
           </thead>
           <tbody>
             {#each jobs as row, i}
-              {@const sc = statusColor(row.status)}
-              <tr
-                onclick={() => window.location.href = `/?job=${row.job_id}`}
-                style="background:{i % 2 === 0 ? 'white' : '#fcf9ef'};cursor:pointer;border-bottom:1px solid #ebe8dd;transition:background 0.15s;"
-                onmouseenter={(e) => e.currentTarget.style.background = '#e8ffd0'}
-                onmouseleave={(e) => e.currentTarget.style.background = i % 2 === 0 ? 'white' : '#fcf9ef'}
-              >
+              <tr class="job-row" onclick={() => window.location.href = `/?job=${row.job_id}`}>
                 <!-- Job ID -->
-                <td style="padding:10px 12px;font-size:11px;font-weight:700;color:#383832;white-space:nowrap;font-family:monospace;">
-                  {row.job_id}
-                </td>
+                <td class="mono" style="white-space:nowrap;">{row.job_id}</td>
                 <!-- Date -->
-                <td style="padding:10px 12px;font-size:11px;font-weight:600;color:#65655e;white-space:nowrap;">
-                  {fmtDate(row.created)}
-                </td>
+                <td style="white-space:nowrap;color:var(--text-muted);">{fmtDate(row.created)}</td>
                 <!-- Status badge -->
-                <td style="padding:10px 12px;white-space:nowrap;">
-                  <span style="display:inline-block;padding:3px 10px;font-size:9px;font-weight:900;letter-spacing:0.1em;text-transform:uppercase;background:{sc.bg};color:{sc.text};">
-                    {row.status}
-                  </span>
+                <td style="white-space:nowrap;">
+                  <span class="status-badge {statusClass(row.status)}">{row.status}</span>
                 </td>
                 <!-- Outlets -->
-                <td style="padding:10px 12px;font-size:11px;font-weight:700;color:#383832;text-align:right;white-space:nowrap;">
-                  {row.outlets.toLocaleString()}
-                </td>
+                <td class="mono" style="text-align:right;white-space:nowrap;">{row.outlets.toLocaleString()}</td>
                 <!-- A / B / C counts -->
-                <td style="padding:10px 12px;text-align:center;white-space:nowrap;">
-                  <span style="font-size:10px;font-weight:800;color:#007518;">{row.classA}</span>
-                  <span style="font-size:10px;color:#828179;margin:0 3px;">/</span>
-                  <span style="font-size:10px;font-weight:800;color:#ff9d00;">{row.classB}</span>
-                  <span style="font-size:10px;color:#828179;margin:0 3px;">/</span>
-                  <span style="font-size:10px;font-weight:800;color:#be2d06;">{row.classC}</span>
+                <td style="text-align:center;white-space:nowrap;" class="mono">
+                  <span class="abc-a">{row.classA}</span>
+                  <span class="abc-sep">/</span>
+                  <span class="abc-b">{row.classB}</span>
+                  <span class="abc-sep">/</span>
+                  <span class="abc-c">{row.classC}</span>
+                </td>
+                <!-- LLM cost -->
+                <td class="mono" style="text-align:right;white-space:nowrap;"
+                    title="{row.llmTokens.toLocaleString()} tokens">
+                  {row.llmCost > 0 ? '$' + row.llmCost.toFixed(4) : '—'}
                 </td>
                 <!-- View button -->
-                <td style="padding:10px 12px;text-align:center;white-space:nowrap;">
-                  <span style="display:inline-block;padding:4px 12px;font-size:9px;font-weight:900;letter-spacing:0.1em;background:#00fc40;color:#383832;border:2px solid #383832;box-shadow:2px 2px 0 #383832;cursor:pointer;">
-                    VIEW RESULTS
-                  </span>
+                <td style="text-align:center;white-space:nowrap;">
+                  <div class="row-actions">
+                    <span class="chip chip-accent">View results</span>
+                    <button
+                      class="btn-ghost btn-sm"
+                      onclick={(e) => { e.stopPropagation(); openShare(row.job_id); }}
+                    >
+                      Share
+                    </button>
+                  </div>
                 </td>
               </tr>
             {/each}
@@ -667,3 +695,381 @@
     </div>
   {/if}
 {/if}
+
+<!-- ============================================================ -->
+<!-- SHARE MODAL -->
+<!-- ============================================================ -->
+{#if shareJobId}
+  <div
+    class="modal-backdrop"
+    role="presentation"
+    onclick={closeShare}
+    onkeydown={onShareKeydown}
+  >
+    <div
+      class="modal share-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Share job"
+      tabindex="-1"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={onShareKeydown}
+    >
+      <h2 class="share-title">Share Job — <span class="mono">{shareJobId}</span></h2>
+
+      {#if shareError}
+        <div class="alert alert-danger">{shareError}</div>
+      {/if}
+
+      {#if shareLoading}
+        <div class="share-list">
+          {#each [1,2,3,4] as _}
+            <div class="skeleton" style="height:18px;width:100%;margin:8px 0;"></div>
+          {/each}
+        </div>
+      {:else}
+        <div class="share-list">
+          {#if shareUsers.length === 0}
+            <div class="share-empty">No users available.</div>
+          {:else}
+            {#each shareUsers as user}
+              <label class="share-row">
+                <input
+                  type="checkbox"
+                  checked={shareSelectedIds.includes(user.id)}
+                  onchange={() => toggleShareUser(user.id)}
+                />
+                <span class="share-name">
+                  {user.display_name || user.username}
+                  <span class="share-username">@{user.username}</span>
+                </span>
+              </label>
+            {/each}
+          {/if}
+        </div>
+      {/if}
+
+      <div class="share-actions">
+        <button class="btn btn-ghost btn-sm" onclick={closeShare} disabled={shareSaving}>
+          Cancel
+        </button>
+        <button class="btn btn-sm" onclick={saveShare} disabled={shareSaving || shareLoading}>
+          {shareSaving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<style>
+  /* ---- Page header ---- */
+  .page-head {
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .page-title {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0;
+  }
+  .page-sub {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin: 6px 0 0;
+  }
+  .mono {
+    font-family: var(--font-mono);
+  }
+
+  /* ---- Loading ---- */
+  .loading-block {
+    text-align: center;
+    padding: 48px;
+  }
+  .loading-dots {
+    display: flex;
+    justify-content: center;
+    gap: 6px;
+    margin-bottom: 16px;
+  }
+  .loading-dots span {
+    width: 8px;
+    height: 8px;
+    border-radius: var(--r-pill);
+    animation: bounce 0.6s ease-in-out infinite;
+  }
+  .loading-text {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+  @keyframes bounce {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
+  }
+
+  /* ---- Controls row ---- */
+  .controls-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .control-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .threshold-info {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+  }
+
+  /* ---- Explorer controls ---- */
+  .explorer-controls {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .result-count {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+  }
+
+  /* ---- Charts ---- */
+  .chart-card {
+    padding: 24px;
+  }
+  .bar-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .bar-row:last-child {
+    margin-bottom: 0;
+  }
+  .bar-label {
+    min-width: 120px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text);
+    text-align: right;
+  }
+  .bar-label-period {
+    min-width: 70px;
+    font-weight: 600;
+  }
+  .bar-track {
+    flex: 1;
+    height: 20px;
+    background: var(--surface-3);
+    border-radius: var(--r-sm);
+    overflow: hidden;
+  }
+  .bar-track-tall {
+    height: 24px;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: var(--r-sm);
+    transition: width 0.5s;
+  }
+  .bar-value {
+    min-width: 90px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text);
+    font-family: var(--font-mono);
+  }
+  .empty-chart {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    padding: 24px;
+  }
+
+  /* ---- Export ---- */
+  .export-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+  }
+  .export-card {
+    padding: 0;
+    overflow: hidden;
+  }
+  .export-head {
+    padding: 12px 16px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  .export-body {
+    padding: 20px;
+  }
+  .export-desc {
+    font-size: 0.8rem;
+    color: var(--text);
+    margin-bottom: 12px;
+    line-height: 1.5;
+  }
+  .export-list {
+    margin: 0 0 16px;
+    padding-left: 18px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+  .export-list li {
+    margin: 2px 0;
+  }
+
+  /* ---- List view ---- */
+  .skeleton-row {
+    display: flex;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .skeleton-row:last-child {
+    border-bottom: none;
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: 48px;
+  }
+  .empty-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 8px;
+  }
+  .empty-desc {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+
+  .table-scroll {
+    max-height: 700px;
+    overflow-y: auto;
+  }
+  .head-count {
+    color: var(--text-faint);
+    font-weight: 400;
+  }
+
+  .job-row {
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+  .job-row:hover {
+    background: var(--surface-2);
+  }
+
+  /* ---- Status badge ---- */
+  .status-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    border-radius: var(--r-pill);
+    text-transform: capitalize;
+  }
+  .status-completed {
+    background: var(--success-soft);
+    color: var(--success);
+  }
+  .status-failed {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+  .status-processing {
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
+  .status-default {
+    background: var(--surface-3);
+    color: var(--text-muted);
+  }
+
+  /* ---- A/B/C counts ---- */
+  .abc-a { color: var(--class-a); font-weight: 600; }
+  .abc-b { color: var(--class-b); font-weight: 600; }
+  .abc-c { color: var(--class-c); font-weight: 600; }
+  .abc-sep { color: var(--text-faint); margin: 0 3px; }
+
+  /* ---- Row actions ---- */
+  .row-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* ---- Share modal ---- */
+  .share-modal {
+    width: 420px;
+    max-width: 92vw;
+  }
+  .share-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0 0 16px;
+  }
+  .share-list {
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    margin-bottom: 16px;
+  }
+  .share-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    font-size: 0.82rem;
+    color: var(--text);
+  }
+  .share-row:last-child {
+    border-bottom: none;
+  }
+  .share-row:hover {
+    background: var(--surface);
+  }
+  .share-name {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .share-username {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+  }
+  .share-empty {
+    padding: 16px;
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+  .share-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+</style>

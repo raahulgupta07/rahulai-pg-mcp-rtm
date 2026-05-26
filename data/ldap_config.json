@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "label": "Company Directory",
+  "host": "host.docker.internal",
+  "port": 3890,
+  "use_tls": false,
+  "validate_cert": false,
+  "app_dn": "cn=admin,dc=example,dc=org",
+  "app_password": "adminpw",
+  "search_base": "dc=example,dc=org",
+  "attr_username": "uid",
+  "attr_mail": "mail",
+  "search_filter": "",
+  "default_role": "user",
+  "admin_group": ""
+}

@@ -19,15 +19,23 @@ class RTMClassifier:
     Each branch is its own universe — denominator is the branch total.
     """
 
-    def __init__(self, sales_df):
+    def __init__(self, sales_df, config=None):
         """
         Initialize with pre-merged sales data containing all required columns.
+
+        config: optional dict of tunable rule parameters (see backend/rule_defaults.py).
+                Any missing key falls back to the literal default at the call site.
         """
         self.sales = sales_df.copy()
+        self.config = config or {}
         self.results = None
         self.max_date = None
         self.min_date = None
         self.route_workload = None
+
+    def _cfg(self, section, key, default):
+        """Read a rule parameter, falling back to a literal default."""
+        return (self.config.get(section) or {}).get(key, default)
 
     def validate_data(self):
         """Validate required columns exist"""
@@ -138,8 +146,8 @@ class RTMClassifier:
             "Outlet Channel": "first",
         }
 
-        # Add extra columns if present
-        extra_cols = ["Channel", "GroupName"]
+        # Add extra columns if present (incl. geo — Latitude/Longitude/Township)
+        extra_cols = ["Channel", "GroupName", "Latitude", "Longitude", "Township"]
         for col in extra_cols:
             if col in self.sales.columns:
                 agg_dict[col] = "first"
@@ -265,16 +273,24 @@ class RTMClassifier:
     def identify_wholesalers(self, df):
         """Identify wholesalers: >=3 cartons per brand per month of local products"""
 
+        if not self._cfg("wholesaler", "enabled", True):
+            df["Is_Wholesaler"] = False
+            print(f"Identified 0 wholesalers (detection disabled in rule config)")
+            return df
+
         if not self.has_item_type:
             df["Is_Wholesaler"] = False
             print(f"Identified 0 wholesalers (no Item Type column)")
             return df
 
-        local_df = self.sales[self.sales["Item Type"] == "Local"].copy()
+        ws_item_type = self._cfg("wholesaler", "item_type", "Local")
+        carton_threshold = self._cfg("wholesaler", "cartons_per_brand_month", 3)
+
+        local_df = self.sales[self.sales["Item Type"] == ws_item_type].copy()
 
         if local_df.empty:
             df["Is_Wholesaler"] = False
-            print(f"Identified 0 wholesalers (no Local products)")
+            print(f"Identified 0 wholesalers (no {ws_item_type} products)")
             return df
 
         local_df["Cartons"] = local_df["TotalPcs"] / local_df["NumInBuy"]
@@ -286,7 +302,7 @@ class RTMClassifier:
             .sum()
             .reset_index()
         )
-        high_volume = brand_monthly[brand_monthly["Cartons"] >= 3]
+        high_volume = brand_monthly[brand_monthly["Cartons"] >= carton_threshold]
         wholesaler_keys = set(
             zip(high_volume["BranchName"], high_volume["Cus.Code"])
         )
@@ -304,6 +320,13 @@ class RTMClassifier:
 
         all_branch_results = []
 
+        a_cutoff = self._cfg("pareto", "class_a_cutoff", 80)
+        b_cutoff = self._cfg("pareto", "class_b_cutoff", 95)
+        cat_override_on = self._cfg("category_override", "enabled", True)
+        cat_cutoff = self._cfg("category_override", "contribution_cutoff", 80)
+        a_tier = self._cfg("frequency", "class_a_tier", "F4")
+        other_tier = self._cfg("frequency", "other_tier", "F2")
+
         for branch, branch_df in df.groupby("BranchName"):
             bdf = branch_df.sort_values("TotalSales_2Yr", ascending=False).reset_index(drop=True)
 
@@ -316,9 +339,9 @@ class RTMClassifier:
                 bdf["CumulativePct"] = 0
 
             def classify_pareto(cum_pct):
-                if cum_pct <= 80:
+                if cum_pct <= a_cutoff:
                     return "Class A"
-                elif cum_pct <= 95:
+                elif cum_pct <= b_cutoff:
                     return "Class B"
                 else:
                     return "Class C"
@@ -328,20 +351,18 @@ class RTMClassifier:
             def apply_special_rules(row):
                 if row.get("OutletChannel") == "Wholesales" or row.get("Is_Wholesaler", False):
                     return "Class A Local (F4)"
-                for item_class in ["Nutrition", "Food", "Non Food"]:
-                    if row.get(f"{item_class}_Contribution_Pct", 0) >= 80:
-                        return f"Class A {item_class}"
+                if cat_override_on:
+                    for item_class in ["Nutrition", "Food", "Non Food"]:
+                        if row.get(f"{item_class}_Contribution_Pct", 0) >= cat_cutoff:
+                            return f"Class A {item_class}"
                 return row["Base_Classification"]
 
             bdf["Classification"] = bdf.apply(apply_special_rules, axis=1)
 
-            # Add Visit Frequency tier (F4 = high priority, F2 = standard)
+            # Add Visit Frequency tier (config-driven)
             def assign_frequency_tier(row):
                 cls = str(row.get("Classification", ""))
-                if "Class A" in cls:
-                    return "F4"
-                else:
-                    return "F2"
+                return a_tier if "Class A" in cls else other_tier
 
             bdf["Visit_Frequency"] = bdf.apply(assign_frequency_tier, axis=1)
 
@@ -412,14 +433,19 @@ class RTMClassifier:
             route_outlets = self.sales.groupby(["BranchName", "RouteCode"])["Cus.Code"].nunique().reset_index()
             route_outlets.columns = ["BranchName", "RouteCode", "OutletCount"]
 
-            # Define thresholds
+            # Workload targets (config-driven)
+            ygn_min = self._cfg("workload", "yangon_min", 25)
+            ygn_max = self._cfg("workload", "yangon_max", 30)
+            reg_min = self._cfg("workload", "regional_min", 30)
+            reg_max = self._cfg("workload", "regional_max", 35)
+
             def check_workload(row):
                 branch = row["BranchName"]
                 count = row["OutletCount"]
                 if branch == "Yangon":
-                    min_target, max_target = 25, 30
+                    min_target, max_target = ygn_min, ygn_max
                 else:
-                    min_target, max_target = 30, 35
+                    min_target, max_target = reg_min, reg_max
 
                 if count < min_target:
                     return "BELOW_MIN"

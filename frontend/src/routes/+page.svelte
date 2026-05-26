@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { classify, exportExcel, getJob, getSettings } from '$lib/api';
+  import { classify, exportExcel, getJob, getJobComparison, getSettings } from '$lib/api';
   import { page } from '$app/stores';
   import KpiCard from '$lib/components/KpiCard.svelte';
   import DataTable from '$lib/components/DataTable.svelte';
@@ -12,6 +12,7 @@
   let thresholdA = $state(80);
   let thresholdB = $state(95);
   let data = $state(null);
+  let comparison = $state(null);
   let error = $state('');
   let logEntries = $state([]);
   let selectedBranch = $state('All Branches');
@@ -41,7 +42,7 @@
 
   const terminalMessages: string[][] = [
     [
-      '$ mcp-agent upload --file sales_data.csv',
+      '$ rtm-agent upload --file sales_data.csv',
       '[INFO] Reading file into memory buffer...',
       '[INFO] Detecting encoding: UTF-8 confirmed',
       '[INFO] Row count: 211,721 transactions',
@@ -49,7 +50,7 @@
       '[OK] File successfully loaded into DataFrame',
     ],
     [
-      '$ mcp-agent validate --check-schema',
+      '$ rtm-agent validate --check-schema',
       '[SCAN] Required: Cus.Code ........... FOUND',
       '[SCAN] Required: TotalAmount ........ FOUND',
       '[SCAN] Required: TotalPcs ........... FOUND',
@@ -63,7 +64,7 @@
       '[OK] Schema validation passed — all columns present',
     ],
     [
-      '$ mcp-agent aggregate --group-by BranchName,Cus.Code',
+      '$ rtm-agent aggregate --group-by BranchName,Cus.Code',
       '[SQL] SELECT BranchName, Cus.Code, SUM(TotalAmount), SUM(TotalPcs),',
       '      COUNT(DISTINCT InvoiceNo), MIN(DocDate), MAX(DocDate)',
       '      GROUP BY BranchName, Cus.Code',
@@ -76,7 +77,7 @@
       '[OK] Aggregated to 11,333 customer-branch combinations',
     ],
     [
-      '$ mcp-agent calculate --periods 2Yr,12M,6M,3M',
+      '$ rtm-agent calculate --periods 2Yr,12M,6M,3M',
       '[CALC] TotalSales_2Yr = SUM(TotalAmount) over full range',
       '[CALC] TotalSales_12M = SUM where DocDate >= 2024-09-30',
       '[CALC] TotalSales_6M = SUM where DocDate >= 2025-03-30',
@@ -86,7 +87,7 @@
       '[OK] Period averages computed for all 11,333 outlets',
     ],
     [
-      '$ mcp-agent contributions --denominator branch_total',
+      '$ rtm-agent contributions --denominator branch_total',
       '[CALC] For each of 9 branches:',
       '[CALC]   outlet_pct = outlet_sales / branch_total * 100',
       '[CALC] Nutrition_Contribution_Pct per outlet...',
@@ -95,7 +96,7 @@
       '[OK] Revenue contribution percentages computed',
     ],
     [
-      '$ mcp-agent detect-wholesalers --threshold 3 --type Local',
+      '$ rtm-agent detect-wholesalers --threshold 3 --type Local',
       '[SCAN] Filtering transactions where Item Type == "Local"...',
       '[WARN] 0 Local product transactions found in dataset',
       '[WARN] All products are classified as "Import"',
@@ -105,7 +106,7 @@
       '[OK] Wholesaler scan complete — 0 flagged',
     ],
     [
-      '$ mcp-agent classify --method pareto --partition branch',
+      '$ rtm-agent classify --method pareto --partition branch',
       '[ALGO] For each branch partition:',
       '[ALGO]   1. SORT outlets BY TotalSales_2Yr DESC',
       '[ALGO]   2. CumulativePct = RUNNING_SUM / branch_total',
@@ -120,7 +121,7 @@
       '[OK] Classification: A=1,449 | B=2,104 | C=7,780',
     ],
     [
-      '$ mcp-agent frequency --metric purchase_days',
+      '$ rtm-agent frequency --metric purchase_days',
       '[CALC] PurchaseDays_2Yr = COUNT(DISTINCT DocDate) per outlet',
       '[CALC] PurchaseDays_12M, PurchaseDays_6M computed',
       '[CALC] Frequency_2Yr = 365 / PurchaseDays_2Yr',
@@ -129,7 +130,7 @@
       '[OK] Purchase frequency metrics computed',
     ],
     [
-      '$ mcp-agent enrich --ai-rules',
+      '$ rtm-agent enrich --ai-rules',
       '[AI] Computing AI_Growth_Signal...',
       '[AI]   Growing (6M > 12M/2 * 1.1): 3,421 outlets',
       '[AI]   Declining (6M < 12M/2 * 0.9): 2,876 outlets',
@@ -143,7 +144,7 @@
       '[OK] Rule-based AI enrichment complete — 5 columns added',
     ],
     [
-      '$ mcp-agent insights --model gemini-3.1-flash-lite --via openrouter',
+      '$ rtm-agent insights --model gemini-3.1-flash-lite --via openrouter',
       '[LLM] Connecting to OpenRouter API...',
       '[LLM] Model: google/gemini-3.1-flash-lite-preview',
       '[LLM] Generating executive summary (800 tokens)...',
@@ -153,10 +154,10 @@
       '[OK] All AI insights generated',
       '',
       '═══════════════════════════════════════════',
-      '[MCP AGENT] ✓ PIPELINE COMPLETE',
-      '[MCP AGENT] 11,333 outlets classified',
-      '[MCP AGENT] 9 branches processed',
-      '[MCP AGENT] Job saved to database',
+      '[RTM AGENT] ✓ PIPELINE COMPLETE',
+      '[RTM AGENT] 11,333 outlets classified',
+      '[RTM AGENT] 9 branches processed',
+      '[RTM AGENT] Job saved to database',
       '═══════════════════════════════════════════',
     ],
   ];
@@ -180,11 +181,11 @@
   async function loadJob(jobId: string) {
     state = 'processing';
     currentStep = 10;
-    terminalLines = ['[MCP AGENT] Loading job from history...', `[MCP AGENT] Job ID: ${jobId}`, '', '[INFO] Fetching results from database...'];
+    terminalLines = ['[RTM AGENT] Loading job from history...', `[RTM AGENT] Job ID: ${jobId}`, '', '[INFO] Fetching results from database...'];
     try {
       const jobData = await getJob(jobId);
       const results = jobData.results || [];
-      terminalLines = [...terminalLines, `[OK] Loaded ${results.length} outlet records`, '', '═══════════════════════════════════════════', '[MCP AGENT] ✓ JOB LOADED', '═══════════════════════════════════════════'];
+      terminalLines = [...terminalLines, `[OK] Loaded ${results.length} outlet records`, '', '═══════════════════════════════════════════', '[RTM AGENT] ✓ JOB LOADED', '═══════════════════════════════════════════'];
       data = {
         job_id: jobId,
         total_outlets: results.length,
@@ -202,6 +203,9 @@
         data_quality_ok: [`Loaded ${results.length} outlets from job ${jobId}`],
       };
       logEntries = data.log;
+      // Fetch comparison without blocking the main render
+      comparison = null;
+      getJobComparison(jobId).then(c => { comparison = c; }).catch(() => {});
       await new Promise(r => setTimeout(r, 800));
       state = 'results';
     } catch (e: any) {
@@ -254,10 +258,10 @@
   });
 
   function fmtNum(n) {
-    if (n >= 1e9) return `$${(n / 1e9).toFixed(1)}B`;
-    if (n >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
-    if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
-    return `$${n.toLocaleString()}`;
+    if (n >= 1e9) return `Ks ${(n / 1e9).toFixed(1)}B`;
+    if (n >= 1e6) return `Ks ${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e3) return `Ks ${(n / 1e3).toFixed(1)}K`;
+    return `Ks ${n.toLocaleString()}`;
   }
 
   function fmtPct(n) {
@@ -267,12 +271,12 @@
   function renderMarkdown(text) {
     if (!text) return '';
     return text
-      .replace(/### (.*?)$/gm, '<h3 style="font-size:14px;font-weight:900;margin:16px 0 8px;color:#383832;">$1</h3>')
-      .replace(/## (.*?)$/gm, '<h2 style="font-size:16px;font-weight:900;margin:16px 0 8px;color:#383832;">$1</h2>')
+      .replace(/### (.*?)$/gm, '<h3 class="md-h3">$1</h3>')
+      .replace(/## (.*?)$/gm, '<h2 class="md-h2">$1</h2>')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(.*?)\*/g, '<em>$1</em>')
-      .replace(/^- (.*?)$/gm, '<div style="padding-left:16px;margin:4px 0;">• $1</div>')
-      .replace(/^\* (.*?)$/gm, '<div style="padding-left:16px;margin:4px 0;">• $1</div>')
+      .replace(/^- (.*?)$/gm, '<div class="md-li">• $1</div>')
+      .replace(/^\* (.*?)$/gm, '<div class="md-li">• $1</div>')
       .replace(/\n\n/g, '<br><br>')
       .replace(/\n/g, '<br>');
   }
@@ -289,7 +293,7 @@
     if (!file) return;
     state = 'processing';
     currentStep = 0;
-    terminalLines = ['[MCP AGENT] Pipeline initiated...', `[MCP AGENT] File: ${file.name} (${(file.size/1024).toFixed(0)} KB)`, ''];
+    terminalLines = ['[RTM AGENT] Pipeline initiated...', `[RTM AGENT] File: ${file.name} (${(file.size/1024).toFixed(0)} KB)`, ''];
     error = '';
 
     // Type terminal lines one by one with realistic timing
@@ -330,22 +334,23 @@
       data = await classify(file, thresholdA, thresholdB);
       clearInterval(stepInterval);
       clearInterval(typeInterval);
+      comparison = data.comparison ?? null;
       logEntries = data.log || [];
 
       // Replace simulated terminal with actual pipeline log from backend
       if (data.log?.length) {
         terminalLines = [
-          '[MCP AGENT] Pipeline initiated...',
-          `[MCP AGENT] File: ${file.name} (${(file.size/1024).toFixed(0)} KB)`,
+          '[RTM AGENT] Pipeline initiated...',
+          `[RTM AGENT] File: ${file.name} (${(file.size/1024).toFixed(0)} KB)`,
           '',
           ...data.log.map((l: string) => `  ${l}`),
           '',
           '═══════════════════════════════════════════',
-          `[MCP AGENT] ✓ ALL STEPS COMPLETE — ${data.total_outlets ?? '?'} outlets classified`,
+          `[RTM AGENT] ✓ ALL STEPS COMPLETE — ${data.total_outlets ?? '?'} outlets classified`,
           '═══════════════════════════════════════════',
         ];
       } else {
-        terminalLines = [...terminalLines, '', '═══════════════════════════════════════════', '[MCP AGENT] ✓ ALL STEPS COMPLETE', '═══════════════════════════════════════════'];
+        terminalLines = [...terminalLines, '', '═══════════════════════════════════════════', '[RTM AGENT] ✓ ALL STEPS COMPLETE', '═══════════════════════════════════════════'];
       }
       scrollTerminal();
       currentStep = 10;
@@ -354,7 +359,7 @@
     } catch (e: any) {
       clearInterval(stepInterval);
       clearInterval(typeInterval);
-      terminalLines = [...terminalLines, '', `[MCP AGENT] ✗ ERROR: ${e.message}`];
+      terminalLines = [...terminalLines, '', `[RTM AGENT] ✗ ERROR: ${e.message}`];
       error = e.message;
       await new Promise(r => setTimeout(r, 2000));
       state = 'upload';
@@ -368,14 +373,14 @@
     if (!selected) { file = null; return; }
     // Validate: must be .csv
     if (!selected.name.toLowerCase().endsWith('.csv')) {
-      fileError = 'INVALID FILE TYPE — ONLY .CSV FILES ACCEPTED';
+      fileError = 'Invalid file type — only .csv files accepted';
       file = null;
       input.value = '';
       return;
     }
     // Validate: max 100MB
     if (selected.size > 100 * 1024 * 1024) {
-      fileError = 'FILE TOO LARGE — MAXIMUM 100MB';
+      fileError = 'File too large — maximum 100MB';
       file = null;
       input.value = '';
       return;
@@ -387,6 +392,7 @@
     state = 'upload';
     file = null;
     data = null;
+    comparison = null;
     error = '';
     logEntries = [];
     selectedBranch = 'All Branches';
@@ -612,20 +618,52 @@
       }));
   });
 
-  const tabLabels = ['DASHBOARD', 'DATA EXPLORER', 'ANALYTICS', 'AI INSIGHTS', 'LOG', 'EXPORT'];
+  const tabLabels = ['Dashboard', 'Data Explorer', 'Analytics', 'AI Insights', 'Comparison', 'Log', 'Export'];
+
+  // Helper for the Comparison tab — color a Change value by sign
+  function changeColor(n: number) {
+    if (n > 0) return 'var(--success)';
+    if (n < 0) return 'var(--danger)';
+    return 'var(--text-muted)';
+  }
+  function fmtMaybeNum(v: any) {
+    return typeof v === 'number' ? v.toLocaleString() : v;
+  }
   const pipelineSteps = ['Upload', 'Validate', 'Aggregate', 'Averages', 'Contributions', 'Wholesalers', 'Classify', 'Frequency', 'AI Enrich'];
   let pipelineExpanded = $state(false);
+
+  function cliClass(line: string) {
+    if (line.startsWith('[RTM AGENT] ✓')) return 'cli-success';
+    if (line.startsWith('[RTM AGENT] ✗')) return 'cli-error';
+    if (line.startsWith('[RTM AGENT]')) return 'cli-info';
+    if (line.startsWith('$')) return 'cli-command';
+    if (line.startsWith('[OK]')) return 'cli-success';
+    if (line.startsWith('[WARN]')) return 'cli-warn';
+    if (line.startsWith('[SKIP]')) return 'cli-warn';
+    if (line.startsWith('[RESULT]')) return 'cli-info';
+    if (line.startsWith('[ALGO]')) return 'cli-info';
+    if (line.startsWith('[CALC]')) return 'cli-dim';
+    if (line.startsWith('[SCAN]')) return 'cli-info';
+    if (line.startsWith('[SQL]')) return 'cli-warn';
+    if (line.startsWith('[AI]')) return 'cli-info';
+    if (line.startsWith('[LLM]')) return 'cli-info';
+    if (line.startsWith('[INFO]')) return 'cli-dim';
+    if (line.startsWith('[ERR]')) return 'cli-error';
+    if (line.startsWith('═')) return 'cli-success';
+    if (line === '') return 'cli-blank';
+    return 'cli-output';
+  }
 </script>
 
-<!-- HERO BOX -->
-<div style="background:#383832;color:#feffd6;padding:16px 24px;margin-bottom:24px;border-bottom:4px solid #383832;border-right:4px solid #383832;">
-  <div style="font-size:1.5rem;font-weight:900;letter-spacing:-0.03em;">MCP AGENT — OUTLET CLASSIFICATION</div>
-  <div style="font-size:11px;opacity:0.75;margin-top:4px;">PARETO 80/15/5 — PARTITIONED BY BRANCH</div>
+<!-- HERO -->
+<div class="page-hero animate-fade-in">
+  <h1>RTM Agent — Outlet Classification</h1>
+  <p>Pareto 80/15/5, partitioned by branch</p>
 </div>
 
 <!-- ======== UPLOAD STATE ======== -->
 {#if state === 'upload'}
-  <div style="max-width:680px;margin:0 auto;">
+  <div class="upload-wrap animate-fade-up">
     <!-- Hidden file input -->
     <input
       type="file"
@@ -636,312 +674,255 @@
     />
 
     <!-- File upload card -->
-    <div style="background:white;border:3px solid #383832;box-shadow:6px 6px 0 #383832;padding:32px;">
+    <div class="card upload-card">
 
       {#if !file}
         <!-- Empty state: clickable upload area -->
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
+          class="drop-zone"
           onclick={() => document.getElementById('fileInput')?.click()}
-          style="border:2px dashed #828179;padding:48px 32px;text-align:center;cursor:pointer;transition:border-color 0.2s,background 0.2s;"
-          onmouseenter={(e) => { e.currentTarget.style.borderColor='#007518'; e.currentTarget.style.background='#f0fff0'; }}
-          onmouseleave={(e) => { e.currentTarget.style.borderColor='#828179'; e.currentTarget.style.background='transparent'; }}
         >
-          <div style="font-size:2rem;color:#828179;margin-bottom:12px;">&#x25B2;</div>
-          <div style="font-size:13px;font-weight:900;letter-spacing:0.08em;text-transform:uppercase;color:#383832;margin-bottom:8px;">UPLOAD SALES CSV</div>
-          <div style="font-size:11px;color:#828179;font-weight:600;">Click to browse or drag & drop your file</div>
-          <div style="font-size:10px;color:#828179;margin-top:12px;opacity:0.7;">Only .csv files accepted</div>
+          <div class="drop-icon">↑</div>
+          <div class="drop-title">Upload Sales CSV</div>
+          <div class="drop-sub">Click to browse or drag &amp; drop your file</div>
+          <div class="drop-hint">Only .csv files accepted</div>
         </div>
       {:else}
-        <!-- File selected state with cross button -->
-        <div style="border:2px solid #007518;padding:20px 24px;display:flex;align-items:center;justify-content:space-between;background:#f0fff0;">
-          <div style="display:flex;align-items:center;gap:12px;">
-            <div style="width:36px;height:36px;background:#007518;display:flex;align-items:center;justify-content:center;color:white;font-size:14px;font-weight:900;">&#x2713;</div>
+        <!-- File selected state -->
+        <div class="file-selected">
+          <div class="file-info">
+            <div class="file-check">✓</div>
             <div>
-              <div style="font-size:12px;font-weight:900;color:#383832;letter-spacing:0.03em;">{file.name}</div>
-              <div style="font-size:10px;color:#65655e;margin-top:2px;">{(file.size / 1024).toFixed(0)} KB — CSV FILE</div>
+              <div class="file-name">{file.name}</div>
+              <div class="file-meta">{(file.size / 1024).toFixed(0)} KB · CSV file</div>
             </div>
           </div>
           <button
+            class="btn-danger btn-sm file-remove"
+            aria-label="Remove file"
             onclick={() => { file = null; fileError = ''; const el = document.getElementById('fileInput'); if (el) el.value = ''; }}
-            style="width:28px;height:28px;background:#be2d06;color:white;border:2px solid #383832;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:900;cursor:pointer;box-shadow:2px 2px 0 #383832;"
-            onmousedown={(e) => { e.currentTarget.style.transform='translate(1px,1px)'; e.currentTarget.style.boxShadow='1px 1px 0 #383832'; }}
-            onmouseup={(e) => { e.currentTarget.style.transform='translate(0,0)'; e.currentTarget.style.boxShadow='2px 2px 0 #383832'; }}
-          >&#x2715;</button>
+          >✕</button>
         </div>
 
         <!-- File validation error -->
         {#if fileError}
-          <div style="margin-top:12px;padding:8px 14px;background:#be2d06;color:white;font-size:11px;font-weight:900;letter-spacing:0.05em;border:2px solid #383832;">
-            {fileError}
-          </div>
+          <div class="alert alert-danger" style="margin-top:12px;">{fileError}</div>
         {/if}
       {/if}
 
       <!-- Threshold sliders -->
-      <div style="margin-top:24px;display:flex;gap:24px;">
-        <div style="flex:1;">
-          <label style="font-size:10px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:#383832;display:block;margin-bottom:6px;">
-            CLASS A CUTOFF: {thresholdA}%
-          </label>
-          <input type="range" min="50" max="95" bind:value={thresholdA}
-            style="width:100%;accent-color:#007518;cursor:pointer;" />
+      <div class="threshold-row">
+        <div class="threshold-field">
+          <label class="label" for="threshA">Class A cutoff: {thresholdA}%</label>
+          <input id="threshA" type="range" min="50" max="95" bind:value={thresholdA} class="range range-a" />
         </div>
-        <div style="flex:1;">
-          <label style="font-size:10px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:#383832;display:block;margin-bottom:6px;">
-            CLASS B CUTOFF: {thresholdB}%
-          </label>
-          <input type="range" min={thresholdA + 1} max="99" bind:value={thresholdB}
-            style="width:100%;accent-color:#ff9d00;cursor:pointer;" />
+        <div class="threshold-field">
+          <label class="label" for="threshB">Class B cutoff: {thresholdB}%</label>
+          <input id="threshB" type="range" min={thresholdA + 1} max="99" bind:value={thresholdB} class="range range-b" />
         </div>
       </div>
 
       <!-- Preview KPI cards -->
       {#if file}
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:20px;">
-          <KpiCard label="Class A" value="{thresholdA}%" subtitle="top revenue" accent="#007518" />
-          <KpiCard label="Class B" value="{thresholdB - thresholdA}%" subtitle="middle tier" accent="#ff9d00" />
-          <KpiCard label="Class C" value="{100 - thresholdB}%" subtitle="remaining" accent="#be2d06" />
+        <div class="preview-kpis">
+          <KpiCard label="Class A" value="{thresholdA}%" subtitle="top revenue" accent="var(--class-a)" />
+          <KpiCard label="Class B" value="{thresholdB - thresholdA}%" subtitle="middle tier" accent="var(--class-b)" />
+          <KpiCard label="Class C" value="{100 - thresholdB}%" subtitle="remaining" accent="var(--class-c)" />
         </div>
       {/if}
 
       <!-- CTA Button -->
-      <button
-        onclick={handleClassify}
-        disabled={!file}
-        style="margin-top:24px;width:100%;padding:14px;font-size:13px;font-weight:900;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;border:3px solid #383832;box-shadow:4px 4px 0 #383832;transition:all 0.15s;
-          {file ? 'background:#00fc40;color:#383832;' : 'background:#ebe8dd;color:#828179;cursor:not-allowed;'}"
-      >
-        RUN CLASSIFICATION
+      <button class="btn btn-block run-btn" onclick={handleClassify} disabled={!file}>
+        Run Classification
       </button>
     </div>
 
     <!-- Error -->
     {#if error}
-      <div style="margin-top:16px;padding:12px 16px;background:#be2d06;color:white;font-size:12px;font-weight:700;border:2px solid #383832;">
-        ERROR: {error}
-      </div>
+      <div class="alert alert-danger" style="margin-top:16px;">Error: {error}</div>
     {/if}
   </div>
 
   <!-- HOW IT WORKS -->
-  <div style="margin-top:32px;">
-    <div style="background:#383832;color:#feffd6;padding:12px 20px;border-bottom:4px solid #383832;border-right:4px solid #383832;margin-bottom:0;">
-      <div style="font-size:14px;font-weight:900;letter-spacing:0.03em;">HOW IT WORKS</div>
-      <div style="font-size:10px;opacity:0.7;margin-top:2px;">What the MCP Agent does with your data</div>
-    </div>
-
-    <!-- Pipeline steps visual -->
-    <div style="background:white;border:3px solid #383832;border-top:none;box-shadow:4px 4px 0 #383832;padding:20px 24px;">
-      <div style="display:flex;align-items:center;justify-content:center;gap:4px;flex-wrap:wrap;margin-bottom:20px;">
-        {#each [
-          { n: '01', label: 'VALIDATE', color: '#007518' },
-          { n: '02', label: 'AGGREGATE', color: '#006f7c' },
-          { n: '03', label: 'PARETO', color: '#ff9d00' },
-          { n: '04', label: 'WHOLESALE', color: '#9d4867' },
-          { n: '05', label: 'AI ENRICH', color: '#be2d06' },
-          { n: '06', label: 'RESULTS', color: '#383832' },
-        ] as step, i}
-          <div style="display:flex;align-items:center;gap:4px;">
-            <div style="width:48px;text-align:center;">
-              <div style="width:32px;height:32px;background:{step.color};color:white;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:900;margin:0 auto;">{step.n}</div>
-              <div style="font-size:7px;font-weight:900;letter-spacing:0.05em;color:#383832;margin-top:3px;">{step.label}</div>
-            </div>
-            {#if i < 5}
-              <div style="font-size:10px;color:#828179;margin:0 2px;">▸</div>
-            {/if}
-          </div>
-        {/each}
+  <div class="info-block">
+    <div class="card card-flush">
+      <div class="card-head">
+        <div class="card-head-title">How It Works</div>
+        <div class="card-head-sub">What the RTM Agent does with your data</div>
       </div>
+      <div class="card-body">
+        <div class="pipeline-steps">
+          {#each [
+            { n: '01', label: 'Validate', color: 'var(--class-a)' },
+            { n: '02', label: 'Aggregate', color: 'var(--class-f4)' },
+            { n: '03', label: 'Pareto', color: 'var(--class-b)' },
+            { n: '04', label: 'Wholesale', color: 'var(--accent)' },
+            { n: '05', label: 'AI Enrich', color: 'var(--class-c)' },
+            { n: '06', label: 'Results', color: 'var(--text-muted)' },
+          ] as step, i}
+            <div class="pstep">
+              <div class="pstep-inner">
+                <div class="pstep-num" style="background:{step.color};">{step.n}</div>
+                <div class="pstep-label">{step.label}</div>
+              </div>
+              {#if i < 5}
+                <div class="pstep-arrow">›</div>
+              {/if}
+            </div>
+          {/each}
+        </div>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:10px;color:#65655e;">
-        <div style="padding:6px 10px;background:#f6f4e9;border-left:3px solid #007518;">Check columns, parse dates, detect branches</div>
-        <div style="padding:6px 10px;background:#f6f4e9;border-left:3px solid #006f7c;">Group transactions → unique outlets per branch</div>
-        <div style="padding:6px 10px;background:#f6f4e9;border-left:3px solid #ff9d00;">Sort by revenue, assign A (80%), B (15%), C (5%)</div>
-        <div style="padding:6px 10px;background:#f6f4e9;border-left:3px solid #9d4867;">Flag bulk buyers (≥3 cartons/brand/month)</div>
-        <div style="padding:6px 10px;background:#f6f4e9;border-left:3px solid #be2d06;">Growth signals, risk levels, LLM insights</div>
-        <div style="padding:6px 10px;background:#f6f4e9;border-left:3px solid #383832;">Dashboard, charts, per-branch Excel export</div>
+        <div class="how-grid">
+          <div class="how-item" style="border-left-color:var(--class-a);">Check columns, parse dates, detect branches</div>
+          <div class="how-item" style="border-left-color:var(--class-f4);">Group transactions → unique outlets per branch</div>
+          <div class="how-item" style="border-left-color:var(--class-b);">Sort by revenue, assign A (80%), B (15%), C (5%)</div>
+          <div class="how-item" style="border-left-color:var(--accent);">Flag bulk buyers (≥3 cartons/brand/month)</div>
+          <div class="how-item" style="border-left-color:var(--class-c);">Growth signals, risk levels, LLM insights</div>
+          <div class="how-item" style="border-left-color:var(--text-muted);">Dashboard, charts, per-branch Excel export</div>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- REQUIRED COLUMNS -->
-  <div style="margin-top:20px;">
-    <div style="background:#383832;color:#feffd6;padding:10px 20px;margin-bottom:0;">
-      <div style="font-size:12px;font-weight:900;letter-spacing:0.05em;">REQUIRED COLUMNS IN YOUR CSV</div>
-    </div>
-    <div style="background:white;border:3px solid #383832;border-top:none;box-shadow:4px 4px 0 #383832;padding:16px 20px;">
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px;margin-bottom:12px;">
-        {#each [
-          { col: 'Cus.Code', desc: 'Customer ID' },
-          { col: 'Cus.Name', desc: 'Outlet name' },
-          { col: 'TotalAmount', desc: 'Sales amount' },
-          { col: 'TotalPcs', desc: 'Quantity' },
-          { col: 'BranchName', desc: 'Branch partition' },
-          { col: 'Item Class', desc: 'Nutrition/Food/Non Food' },
-          { col: 'NumInBuy', desc: 'Units per carton' },
-        ] as item}
-          <div style="padding:6px 10px;background:#f6f4e9;border:1px solid #ebe8dd;">
-            <div style="font-size:9px;font-weight:900;color:#007518;letter-spacing:0.05em;">{item.col}</div>
-            <div style="font-size:9px;color:#828179;margin-top:1px;">{item.desc}</div>
-          </div>
-        {/each}
+  <div class="info-block">
+    <div class="card card-flush">
+      <div class="card-head">
+        <div class="card-head-title">Required Columns In Your CSV</div>
       </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
-        <span style="font-size:9px;font-weight:900;color:#383832;letter-spacing:0.05em;">OPTIONAL:</span>
-        {#each ['DocDate', 'InvoiceNo', 'BrandName', 'Item Type', 'Channel'] as col}
-          <span style="padding:2px 8px;font-size:8px;font-weight:700;background:#ebe8dd;color:#65655e;">{col}</span>
-        {/each}
+      <div class="card-body">
+        <div class="cols-grid">
+          {#each [
+            { col: 'Cus.Code', desc: 'Customer ID' },
+            { col: 'Cus.Name', desc: 'Outlet name' },
+            { col: 'TotalAmount', desc: 'Sales amount' },
+            { col: 'TotalPcs', desc: 'Quantity' },
+            { col: 'BranchName', desc: 'Branch partition' },
+            { col: 'Item Class', desc: 'Nutrition/Food/Non Food' },
+            { col: 'NumInBuy', desc: 'Units per carton' },
+          ] as item}
+            <div class="col-card">
+              <div class="col-name">{item.col}</div>
+              <div class="col-desc">{item.desc}</div>
+            </div>
+          {/each}
+        </div>
+        <div class="optional-row">
+          <span class="optional-label">Optional</span>
+          {#each ['DocDate', 'InvoiceNo', 'BrandName', 'Item Type', 'Channel'] as col}
+            <span class="chip">{col}</span>
+          {/each}
+        </div>
       </div>
     </div>
   </div>
 
   <!-- WHAT YOU GET -->
-  <div style="margin-top:20px;margin-bottom:32px;">
-    <div style="background:#383832;color:#feffd6;padding:10px 20px;margin-bottom:0;">
-      <div style="font-size:12px;font-weight:900;letter-spacing:0.05em;">WHAT YOU GET</div>
-    </div>
-    <div style="background:white;border:3px solid #383832;border-top:none;box-shadow:4px 4px 0 #383832;padding:16px 20px;">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:10px;color:#383832;">
-        {#each [
-          'Per-branch Pareto classification (A/B/C/F4)',
-          'KPI dashboard (outlets, classes, revenue)',
-          'Branch comparison matrix (all branches)',
-          'Top 10 outlets by revenue',
-          'AI growth signals (Growing/Stable/Declining)',
-          'AI risk levels (High/Medium/Low)',
-          'AI visit priority (1-4 ranking)',
-          'AI action recommendations per outlet',
-          'Executive summary from Gemini LLM',
-          'Multi-sheet Excel export (per branch)',
-          'Data quality report',
-          'Full job history with replay',
-        ] as item}
-          <div style="padding:4px 8px;display:flex;align-items:center;gap:6px;">
-            <span style="width:14px;height:14px;background:#007518;color:white;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:900;flex-shrink:0;">✓</span>
-            <span style="font-weight:600;">{item}</span>
-          </div>
-        {/each}
+  <div class="info-block info-block-last">
+    <div class="card card-flush">
+      <div class="card-head">
+        <div class="card-head-title">What You Get</div>
+      </div>
+      <div class="card-body">
+        <div class="get-grid">
+          {#each [
+            'Per-branch Pareto classification (A/B/C/F4)',
+            'KPI dashboard (outlets, classes, revenue)',
+            'Branch comparison matrix (all branches)',
+            'Top 10 outlets by revenue',
+            'AI growth signals (Growing/Stable/Declining)',
+            'AI risk levels (High/Medium/Low)',
+            'AI visit priority (1-4 ranking)',
+            'AI action recommendations per outlet',
+            'Executive summary from Gemini LLM',
+            'Multi-sheet Excel export (per branch)',
+            'Data quality report',
+            'Full job history with replay',
+          ] as item}
+            <div class="get-item">
+              <span class="get-check">✓</span>
+              <span>{item}</span>
+            </div>
+          {/each}
+        </div>
       </div>
     </div>
   </div>
 
 <!-- ======== PROCESSING STATE ======== -->
 {:else if state === 'processing'}
-  <div style="display:grid;grid-template-columns:320px 1fr;gap:0;border:3px solid #383832;box-shadow:6px 6px 0 #383832;min-height:500px;">
+  <div class="proc-grid animate-fade-in">
 
     <!-- LEFT: Pipeline steps -->
-    <div style="background:white;border-right:3px solid #383832;">
-      <div style="background:#383832;color:#feffd6;padding:10px 16px;font-weight:900;font-size:11px;letter-spacing:0.1em;">
-        PIPELINE — {currentStep >= 10 ? '10' : currentStep}/10 STEPS
+    <div class="card card-flush proc-left">
+      <div class="card-head">
+        <div class="card-head-title">Pipeline — {currentStep >= 10 ? '10' : currentStep}/10 steps</div>
       </div>
 
-      <div style="padding:8px;display:flex;flex-direction:column;gap:4px;overflow-y:auto;flex:1;">
+      <div class="proc-steps">
         {#each [
-          'UPLOAD FILE',
-          'VALIDATE DATA',
-          'AGGREGATE',
-          'AVERAGES',
-          'CONTRIBUTIONS',
-          'WHOLESALERS',
-          'CLASSIFY',
-          'FREQUENCY',
-          'AI ENRICH',
-          'INSIGHTS'
+          'Upload File',
+          'Validate Data',
+          'Aggregate',
+          'Averages',
+          'Contributions',
+          'Wholesalers',
+          'Classify',
+          'Frequency',
+          'AI Enrich',
+          'Insights'
         ] as step, i}
-          <div style="
-            display:flex;align-items:center;gap:8px;padding:6px 10px;
-            border:2px solid {i < currentStep ? '#007518' : i === currentStep ? '#ff9d00' : '#ebe8dd'};
-            background:{i < currentStep ? '#f0fff0' : i === currentStep ? '#fffbe6' : 'white'};
-            box-shadow:{i === currentStep ? '2px 2px 0 #ff9d00' : i < currentStep ? '2px 2px 0 #007518' : '1px 1px 0 #ebe8dd'};
-            opacity:{i > currentStep ? '0.35' : '1'};
-            transition:all 0.3s;
-          ">
-            <div style="width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:900;flex-shrink:0;
-              background:{i < currentStep ? '#007518' : i === currentStep ? '#ff9d00' : '#ebe8dd'};
-              color:{i <= currentStep ? 'white' : '#828179'};
-              border:1px solid {i < currentStep ? '#007518' : i === currentStep ? '#ff9d00' : '#828179'};
-            ">
+          <div class="proc-step" class:done={i < currentStep} class:active={i === currentStep} class:pending={i > currentStep}>
+            <div class="proc-step-num">
               {i < currentStep ? '✓' : i === currentStep ? '▸' : (i + 1)}
             </div>
-            <div style="font-size:9px;font-weight:800;letter-spacing:0.06em;color:#383832;flex:1;">{step}</div>
+            <div class="proc-step-label">{step}</div>
             {#if i === currentStep}
-              <div style="display:flex;gap:2px;">
-                <span style="width:4px;height:4px;background:#007518;animation:bounce 0.6s ease-in-out infinite;"></span>
-                <span style="width:4px;height:4px;background:#ff9d00;animation:bounce 0.6s ease-in-out infinite;animation-delay:0.15s;"></span>
-                <span style="width:4px;height:4px;background:#be2d06;animation:bounce 0.6s ease-in-out infinite;animation-delay:0.3s;"></span>
+              <div class="proc-dots">
+                <span></span><span></span><span></span>
               </div>
             {/if}
             {#if i < currentStep}
-              <span style="font-size:8px;color:#007518;font-weight:900;background:#dcfce7;padding:1px 6px;border:1px solid #007518;">DONE</span>
+              <span class="badge badge-a">Done</span>
             {/if}
           </div>
         {/each}
       </div>
 
       <!-- Progress bar -->
-      <div style="padding:12px 14px;">
-        <div style="height:6px;background:#ebe8dd;border:1px solid #383832;">
-          <div style="height:100%;background:#007518;transition:width 0.5s;width:{Math.min(currentStep * 10, 100)}%;"></div>
+      <div class="proc-progress">
+        <div class="progress-bar">
+          <div class="progress-bar-fill" style="width:{Math.min(currentStep * 10, 100)}%;"></div>
         </div>
-        <div style="font-size:9px;font-weight:700;color:#828179;margin-top:6px;text-align:center;">
-          {Math.min(currentStep * 10, 100)}% COMPLETE
-        </div>
+        <div class="proc-progress-label">{Math.min(currentStep * 10, 100)}% complete</div>
       </div>
     </div>
 
     <!-- RIGHT: Terminal output -->
-    <div style="background:#0a0a0f;display:flex;flex-direction:column;">
-      <div style="padding:8px 16px;background:#1a1a24;border-bottom:1px solid #2a2a34;display:flex;align-items:center;gap:8px;">
-        <span style="width:8px;height:8px;background:#007518;border-radius:50%;"></span>
-        <span style="font-size:10px;font-weight:700;color:#6b7280;font-family:monospace;letter-spacing:0.05em;">MCP_AGENT_TERMINAL</span>
-        <span style="margin-left:auto;font-size:9px;color:#4a4a54;font-family:monospace;">PID: 28320</span>
+    <div class="cli-terminal proc-terminal">
+      <div class="cli-bar">
+        <span class="cli-dot"></span>
+        <span class="cli-bar-title">rtm_agent_terminal</span>
+        <span class="cli-bar-pid">PID: 28320</span>
       </div>
 
-      <div id="terminal-scroll" style="flex:1;padding:12px 16px;overflow-y:auto;max-height:500px;font-family:'SF Mono','Cascadia Code','Fira Code',monospace;font-size:11px;line-height:1.7;">
+      <div id="terminal-scroll" class="cli-scroll">
         {#each terminalLines as line, i}
-          <div style="
-            animation: fadeIn 0.15s ease-out;
-            {line.startsWith('[MCP AGENT] ✓') ? 'color:#22c55e;font-weight:700;' :
-             line.startsWith('[MCP AGENT] ✗') ? 'color:#ef4444;font-weight:700;' :
-             line.startsWith('[MCP AGENT]') ? 'color:#38bdf8;font-weight:600;' :
-             line.startsWith('$') ? 'color:#00fc40;font-weight:700;' :
-             line.startsWith('[OK]') ? 'color:#22c55e;font-weight:600;' :
-             line.startsWith('[WARN]') ? 'color:#fbbf24;' :
-             line.startsWith('[SKIP]') ? 'color:#fbbf24;font-style:italic;' :
-             line.startsWith('[RESULT]') ? 'color:#38bdf8;font-weight:600;' :
-             line.startsWith('[ALGO]') ? 'color:#a78bfa;' :
-             line.startsWith('[CALC]') ? 'color:#9ca3af;' :
-             line.startsWith('[SCAN]') ? 'color:#67e8f9;' :
-             line.startsWith('[SQL]') ? 'color:#fb923c;' :
-             line.startsWith('[AI]') ? 'color:#c084fc;' :
-             line.startsWith('[LLM]') ? 'color:#f472b6;' :
-             line.startsWith('[INFO]') ? 'color:#9ca3af;' :
-             line.startsWith('[ERR]') ? 'color:#ef4444;font-weight:700;' :
-             line.startsWith('═') ? 'color:#22c55e;font-weight:700;' :
-             line === '' ? 'height:6px;' :
-             'color:#6b7280;'}
-          ">{line}</div>
+          <div class="cli-line {cliClass(line)}">{line}</div>
         {/each}
 
         <!-- Blinking cursor -->
         {#if currentStep < 10}
-          <div style="display:flex;align-items:center;gap:4px;margin-top:4px;">
-            <span style="color:#00fc40;font-weight:700;">$</span>
-            <span style="width:8px;height:14px;background:#00fc40;animation:blink 1s step-end infinite;"></span>
+          <div class="cli-cursor-row">
+            <span class="cli-command">$</span>
+            <span class="cli-cursor"></span>
           </div>
         {/if}
       </div>
     </div>
   </div>
-
-  <style>
-    @keyframes blink {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0; }
-    }
-  </style>
 
 <!-- ======== RESULTS STATE ======== -->
 {:else if state === 'results' && data}
@@ -949,78 +930,50 @@
   <!-- Collapsible pipeline bar -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    onclick={() => pipelineExpanded = !pipelineExpanded}
-    style="
-      background:#383832;color:#feffd6;padding:10px 16px;margin-bottom:{pipelineExpanded ? '0' : '20'}px;
-      display:flex;align-items:center;justify-content:space-between;cursor:pointer;
-      border:2px solid #383832;box-shadow:3px 3px 0 #383832;
-      transition:margin 0.3s;
-    "
-    onmouseenter={(e) => e.currentTarget.style.background='#4a4a44'}
-    onmouseleave={(e) => e.currentTarget.style.background='#383832'}
-  >
-    <div style="display:flex;align-items:center;gap:10px;">
-      <span style="font-size:12px;transition:transform 0.3s;display:inline-block;transform:rotate({pipelineExpanded ? '180' : '0'}deg);">▼</span>
-      <span style="font-size:11px;font-weight:900;letter-spacing:0.08em;">PIPELINE COMPLETE — 10/10 STEPS</span>
-      <span style="font-size:10px;opacity:0.6;font-weight:600;">JOB: {data.job_id}</span>
+  <div class="pipeline-bar" class:expanded={pipelineExpanded} onclick={() => pipelineExpanded = !pipelineExpanded}>
+    <div class="pipeline-bar-left">
+      <span class="pipeline-chevron" class:open={pipelineExpanded}>▾</span>
+      <span class="pipeline-bar-title">Pipeline complete — 10/10 steps</span>
+      <span class="pipeline-bar-job">Job: {data.job_id}</span>
     </div>
-    <div style="display:flex;align-items:center;gap:12px;">
-      <span style="font-size:9px;font-weight:700;background:#007518;color:white;padding:2px 8px;">✓ SUCCESS</span>
-      <span style="font-size:10px;opacity:0.5;font-weight:600;">{pipelineExpanded ? 'COLLAPSE' : 'EXPAND LOG'}</span>
+    <div class="pipeline-bar-right">
+      <span class="badge badge-a">✓ Success</span>
+      <span class="pipeline-bar-action">{pipelineExpanded ? 'Collapse' : 'Expand log'}</span>
     </div>
   </div>
 
   <!-- Expanded pipeline panel -->
   {#if pipelineExpanded}
-    <div style="margin-bottom:20px;border:2px solid #383832;border-top:none;box-shadow:3px 3px 0 #383832;overflow:hidden;animation:slideDown 0.3s ease-out;">
-      <div style="display:grid;grid-template-columns:280px 1fr;min-height:350px;max-height:450px;">
+    <div class="pipeline-panel animate-fade-in">
+      <div class="pipeline-panel-grid">
         <!-- Left: completed steps -->
-        <div style="background:white;border-right:2px solid #383832;padding:8px;display:flex;flex-direction:column;gap:3px;overflow-y:auto;">
-          {#each ['UPLOAD','VALIDATE','AGGREGATE','AVERAGES','CONTRIBUTIONS','WHOLESALERS','CLASSIFY','FREQUENCY','AI ENRICH','INSIGHTS'] as step, i}
-            <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;border:2px solid #007518;background:#f0fff0;box-shadow:2px 2px 0 #007518;">
-              <div style="width:18px;height:18px;background:#007518;color:white;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:900;">✓</div>
-              <div style="font-size:9px;font-weight:800;letter-spacing:0.05em;color:#383832;flex:1;">{step}</div>
-              <span style="font-size:7px;color:#007518;font-weight:900;background:#dcfce7;padding:1px 5px;border:1px solid #007518;">DONE</span>
+        <div class="pipeline-panel-steps">
+          {#each ['Upload','Validate','Aggregate','Averages','Contributions','Wholesalers','Classify','Frequency','AI Enrich','Insights'] as step, i}
+            <div class="pipeline-panel-step">
+              <div class="pipeline-panel-check">✓</div>
+              <div class="pipeline-panel-label">{step}</div>
+              <span class="badge badge-a">Done</span>
             </div>
           {/each}
         </div>
-        <!-- Right: terminal log (scrollable) -->
-        <div style="background:#0a0a0f;overflow-y:auto;padding:12px 16px;font-family:'SF Mono','Cascadia Code','Fira Code',monospace;font-size:11px;line-height:1.7;">
-          {#each terminalLines as line}
-            <div style="
-              {line.startsWith('[MCP AGENT] ✓') ? 'color:#22c55e;font-weight:700;' :
-               line.startsWith('[MCP AGENT] ✗') ? 'color:#ef4444;font-weight:700;' :
-               line.startsWith('[MCP AGENT]') ? 'color:#38bdf8;font-weight:600;' :
-               line.startsWith('$') ? 'color:#00fc40;font-weight:700;' :
-               line.startsWith('[OK]') ? 'color:#22c55e;font-weight:600;' :
-               line.startsWith('[WARN]') ? 'color:#fbbf24;' :
-               line.startsWith('[SKIP]') ? 'color:#fbbf24;font-style:italic;' :
-               line.startsWith('[RESULT]') ? 'color:#38bdf8;font-weight:600;' :
-               line.startsWith('[ALGO]') ? 'color:#a78bfa;' :
-               line.startsWith('[CALC]') ? 'color:#9ca3af;' :
-               line.startsWith('[SCAN]') ? 'color:#67e8f9;' :
-               line.startsWith('[SQL]') ? 'color:#fb923c;' :
-               line.startsWith('[AI]') ? 'color:#c084fc;' :
-               line.startsWith('[LLM]') ? 'color:#f472b6;' :
-               line.startsWith('[INFO]') ? 'color:#9ca3af;' :
-               line.startsWith('═') ? 'color:#22c55e;font-weight:700;' :
-               line === '' ? 'height:6px;' :
-               'color:#6b7280;'}
-            ">{line}</div>
-          {/each}
+        <!-- Right: terminal log -->
+        <div class="cli-terminal pipeline-panel-cli">
+          <div class="cli-scroll">
+            {#each terminalLines as line}
+              <div class="cli-line {cliClass(line)}">{line}</div>
+            {/each}
+          </div>
         </div>
       </div>
     </div>
   {/if}
 
   <!-- Controls row -->
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
+  <div class="controls-row">
     <!-- Branch filter -->
-    <div style="display:flex;align-items:center;gap:8px;">
-      <span style="font-size:10px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:#383832;">BRANCH:</span>
-      <select bind:value={selectedBranch}
-        style="padding:6px 12px;font-size:11px;font-weight:700;background:white;border:2px solid #383832;color:#383832;cursor:pointer;">
+    <div class="branch-filter">
+      <span class="label">Branch</span>
+      <select class="select" bind:value={selectedBranch}>
         <option>All Branches</option>
         {#each branches as branch}
           <option>{branch}</option>
@@ -1029,43 +982,26 @@
     </div>
 
     <!-- Job ID + Reset -->
-    <div style="display:flex;align-items:center;gap:12px;">
-      <span style="font-size:10px;font-weight:700;color:#828179;letter-spacing:0.06em;">JOB: {data.job_id}</span>
-      <button onclick={reset}
-        style="padding:6px 16px;font-size:10px;font-weight:900;letter-spacing:0.1em;background:#00fc40;color:#383832;border:2px solid #383832;cursor:pointer;">
-        NEW JOB
-      </button>
+    <div class="controls-right">
+      <span class="job-tag">Job: {data.job_id}</span>
+      <button class="btn btn-sm" onclick={reset}>New Job</button>
     </div>
   </div>
 
   <!-- KPI cards grid -->
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px;">
-    <KpiCard label="Total Outlets" value={kpis.total.toLocaleString()} subtitle="{kpis.branchCount} branches" accent="#383832" />
-    <KpiCard label="Class A" value={kpis.classA.toLocaleString()} subtitle="{kpis.total > 0 ? fmtPct((kpis.classA / kpis.total) * 100) : '0%'} of total" accent="#007518" />
-    <KpiCard label="Class B" value={kpis.classB.toLocaleString()} subtitle="{kpis.total > 0 ? fmtPct((kpis.classB / kpis.total) * 100) : '0%'} of total" accent="#ff9d00" />
-    <KpiCard label="Class C" value={kpis.classC.toLocaleString()} subtitle="{kpis.total > 0 ? fmtPct((kpis.classC / kpis.total) * 100) : '0%'} of total" accent="#be2d06" />
-    <KpiCard label="Wholesalers" value={kpis.wholesalers.toLocaleString()} subtitle="F4 flagged" accent="#006f7c" />
-    <KpiCard label="Total Revenue" value={fmtNum(kpis.revenue)} subtitle="2-year aggregate" accent="#007518" />
+  <div class="grid-kpi results-kpis">
+    <KpiCard label="Total Outlets" value={kpis.total.toLocaleString()} subtitle="{kpis.branchCount} branches" accent="var(--text-muted)" />
+    <KpiCard label="Class A" value={kpis.classA.toLocaleString()} subtitle="{kpis.total > 0 ? fmtPct((kpis.classA / kpis.total) * 100) : '0%'} of total" accent="var(--class-a)" />
+    <KpiCard label="Class B" value={kpis.classB.toLocaleString()} subtitle="{kpis.total > 0 ? fmtPct((kpis.classB / kpis.total) * 100) : '0%'} of total" accent="var(--class-b)" />
+    <KpiCard label="Class C" value={kpis.classC.toLocaleString()} subtitle="{kpis.total > 0 ? fmtPct((kpis.classC / kpis.total) * 100) : '0%'} of total" accent="var(--class-c)" />
+    <KpiCard label="Wholesalers" value={kpis.wholesalers.toLocaleString()} subtitle="F4 flagged" accent="var(--class-f4)" />
+    <KpiCard label="Total Revenue" value={fmtNum(kpis.revenue)} subtitle="2-year aggregate" accent="var(--class-a)" />
   </div>
 
-  <!-- Tab bar (button style) -->
-  <div style="display:flex;gap:6px;margin-bottom:24px;flex-wrap:wrap;">
+  <!-- Tab bar -->
+  <div class="tab-bar results-tabs">
     {#each tabLabels as label, i}
-      <button
-        onclick={() => activeTab = i}
-        style="
-          padding:8px 18px;font-size:10px;font-weight:900;letter-spacing:0.08em;
-          text-transform:uppercase;cursor:pointer;font-family:'Space Grotesk',sans-serif;
-          border:2px solid #383832;transition:all 0.15s;
-          {activeTab === i
-            ? 'background:#383832;color:#feffd6;box-shadow:3px 3px 0 #383832;'
-            : 'background:#feffd6;color:#383832;box-shadow:3px 3px 0 #383832;'}
-        "
-        onmouseenter={(e) => { if (activeTab !== i) { e.currentTarget.style.background='#007518'; e.currentTarget.style.color='white'; e.currentTarget.style.borderColor='#007518'; }}}
-        onmouseleave={(e) => { if (activeTab !== i) { e.currentTarget.style.background='#feffd6'; e.currentTarget.style.color='#383832'; e.currentTarget.style.borderColor='#383832'; }}}
-        onmousedown={(e) => { e.currentTarget.style.transform='translate(2px,2px)'; e.currentTarget.style.boxShadow='1px 1px 0 #383832'; }}
-        onmouseup={(e) => { e.currentTarget.style.transform='translate(0,0)'; e.currentTarget.style.boxShadow='3px 3px 0 #383832'; }}
-      >
+      <button class="tab" class:active={activeTab === i} onclick={() => activeTab = i}>
         {label}
       </button>
     {/each}
@@ -1076,16 +1012,16 @@
 
     <!-- Data Quality Panel -->
     {#if data.data_quality?.length > 0 || data.data_quality_ok?.length > 0}
-      <div style="margin-bottom:24px;">
+      <div class="section-block">
         <ChapterHeading title="Data Quality Report" subtitle="What was detected and what's missing" />
-        <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;padding:20px;">
+        <div class="card">
 
           <!-- OK checks -->
           {#if data.data_quality_ok?.length > 0}
             {#each data.data_quality_ok as check}
-              <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #ebe8dd;">
-                <span style="width:20px;height:20px;background:#007518;color:white;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:900;flex-shrink:0;">✓</span>
-                <span style="font-size:11px;color:#383832;font-weight:600;">{check}</span>
+              <div class="dq-row">
+                <span class="dq-icon dq-ok">✓</span>
+                <span class="dq-text">{check}</span>
               </div>
             {/each}
           {/if}
@@ -1093,23 +1029,23 @@
           <!-- Warnings / Missing -->
           {#if data.data_quality?.length > 0}
             {#each data.data_quality as item}
-              <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid #ebe8dd;">
-                <span style="width:20px;height:20px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:900;
-                  {item.status === 'warning' ? 'background:#ff9d00;color:white;' :
-                   item.status === 'missing' ? 'background:#be2d06;color:white;' :
-                   'background:#006f7c;color:white;'}
-                ">{item.status === 'warning' ? '!' : item.status === 'missing' ? '✗' : 'i'}</span>
-                <div style="flex:1;">
-                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;">
-                    <span style="font-size:10px;font-weight:900;letter-spacing:0.06em;color:#383832;">{item.field}</span>
-                    <span style="font-size:8px;font-weight:800;padding:1px 6px;letter-spacing:0.05em;
-                      {item.status === 'warning' ? 'background:#fff3cd;color:#856404;border:1px solid #ff9d00;' :
-                       item.status === 'missing' ? 'background:#fee2e2;color:#991b1b;border:1px solid #be2d06;' :
-                       'background:#e0f2fe;color:#075985;border:1px solid #006f7c;'}
-                    ">{item.status.toUpperCase()}</span>
+              <div class="dq-row dq-row-top">
+                <span class="dq-icon"
+                  class:dq-warn={item.status === 'warning'}
+                  class:dq-miss={item.status === 'missing'}
+                  class:dq-info={item.status !== 'warning' && item.status !== 'missing'}
+                >{item.status === 'warning' ? '!' : item.status === 'missing' ? '✗' : 'i'}</span>
+                <div class="dq-body">
+                  <div class="dq-head">
+                    <span class="dq-field">{item.field}</span>
+                    <span class="badge"
+                      class:badge-b={item.status === 'warning'}
+                      class:badge-c={item.status === 'missing'}
+                      class:badge-f4={item.status !== 'warning' && item.status !== 'missing'}
+                    >{item.status}</span>
                   </div>
-                  <div style="font-size:11px;color:#65655e;">{item.message}</div>
-                  <div style="font-size:10px;color:#828179;margin-top:2px;font-style:italic;">Impact: {item.impact}</div>
+                  <div class="dq-message">{item.message}</div>
+                  <div class="dq-impact">Impact: {item.impact}</div>
                 </div>
               </div>
             {/each}
@@ -1118,54 +1054,54 @@
       </div>
     {/if}
 
-    <div style="margin-bottom:24px;">
+    <div class="section-block">
       <ChapterHeading title="Classification Summary" subtitle="Breakdown by Pareto class" />
       <DataTable title="SUMMARY" data={summaryRows()} columns={['Classification', 'Count', 'Revenue', 'Avg Sales', 'Share %']} maxHeight="300px" />
     </div>
 
-    <div style="margin-bottom:24px;">
+    <div class="section-block">
       <ChapterHeading title="Top 10 Outlets" subtitle="Highest revenue outlets across selection" />
       <DataTable title="TOP 10" data={top10()} columns={['Cus.Code', 'Cus.Name', 'Branch', 'Classification', '2Yr Sales', 'Contribution %']} maxHeight="400px" />
     </div>
 
-    <div style="margin-bottom:24px;">
+    <div class="section-block">
       <ChapterHeading title="Branch Matrix" subtitle="Performance across all branches" />
       <DataTable title="BRANCHES" data={branchMatrix()} columns={['Branch', 'Outlets', 'Revenue', 'Class A', 'Class B', 'Class C', 'A %']} maxHeight="400px" />
     </div>
 
     <!-- Seller Workload -->
     {#if data.workload?.length > 0}
-      <div style="margin-bottom:24px;">
+      <div class="section-block">
         <ChapterHeading title="Seller Workload" subtitle="Route outlet counts vs targets (YGN: 25-30, Regional: 30-35)" />
-        <div style="border:3px solid #383832;box-shadow:4px 4px 0 #383832;overflow:hidden;">
-          <div style="padding:8px 12px;background:#383832;color:#feffd6;font-size:10px;font-weight:900;letter-spacing:0.1em;display:flex;justify-content:space-between;">
-            <span>ROUTE WORKLOAD</span>
-            <span style="opacity:0.7;">{data.workload.length} ROUTES</span>
+        <div class="card card-flush">
+          <div class="data-table-head">
+            <span>Route Workload</span>
+            <span class="muted">{data.workload.length} routes</span>
           </div>
-          <div style="max-height:400px;overflow-y:auto;">
-            <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <div class="data-table-wrap">
+            <table class="data-table">
               <thead>
                 <tr>
-                  <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:left;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">BRANCH</th>
-                  <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:left;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">ROUTE</th>
-                  <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:center;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">OUTLETS</th>
-                  <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:center;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">TARGET</th>
-                  <th style="position:sticky;top:0;background:#ebe8dd;padding:8px 12px;text-align:center;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">STATUS</th>
+                  <th>Branch</th>
+                  <th>Route</th>
+                  <th class="ta-c">Outlets</th>
+                  <th class="ta-c">Target</th>
+                  <th class="ta-c">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {#each data.workload as row, i}
-                  <tr style="background:{i % 2 === 0 ? 'white' : '#fcf9ef'};border-bottom:1px solid #ebe8dd;">
-                    <td style="padding:6px 12px;font-weight:700;font-size:10px;">{row.BranchName}</td>
-                    <td style="padding:6px 12px;font-size:10px;font-family:monospace;">{row.RouteCode}</td>
-                    <td style="padding:6px 12px;text-align:center;font-weight:700;">{row.OutletCount}</td>
-                    <td style="padding:6px 12px;text-align:center;font-size:10px;color:#828179;">{row.BranchName === 'Yangon' ? '25-30' : '30-35'}</td>
-                    <td style="padding:6px 12px;text-align:center;">
-                      <span style="font-size:9px;font-weight:900;padding:2px 8px;
-                        {row.Workload_Status === 'OK' ? 'background:#dcfce7;color:#007518;' :
-                         row.Workload_Status === 'BELOW_MIN' ? 'background:#fee2e2;color:#be2d06;' :
-                         'background:#fef9c3;color:#856404;'}
-                      ">{row.Workload_Status === 'OK' ? 'OK' : row.Workload_Status === 'BELOW_MIN' ? 'BELOW MIN' : 'ABOVE MAX'}</span>
+                  <tr>
+                    <td class="td-strong">{row.BranchName}</td>
+                    <td class="td-mono">{row.RouteCode}</td>
+                    <td class="ta-c td-strong">{row.OutletCount}</td>
+                    <td class="ta-c muted">{row.BranchName === 'Yangon' ? '25-30' : '30-35'}</td>
+                    <td class="ta-c">
+                      <span class="badge"
+                        class:badge-a={row.Workload_Status === 'OK'}
+                        class:badge-c={row.Workload_Status === 'BELOW_MIN'}
+                        class:badge-b={row.Workload_Status !== 'OK' && row.Workload_Status !== 'BELOW_MIN'}
+                      >{row.Workload_Status === 'OK' ? 'OK' : row.Workload_Status === 'BELOW_MIN' ? 'Below Min' : 'Above Max'}</span>
                     </td>
                   </tr>
                 {/each}
@@ -1178,250 +1114,272 @@
 
     <!-- AI insight panel -->
     {#if data.insights}
-      <div style="margin-top:32px;background:#383832;color:#feffd6;border:3px solid #383832;box-shadow:4px 4px 0 #383832;">
-        <div style="padding:12px 16px;font-size:11px;font-weight:900;letter-spacing:0.1em;border-bottom:1px solid rgba(254,255,214,0.15);">AI EXECUTIVE SUMMARY</div>
-        <div style="padding:16px;font-size:12px;line-height:1.6;opacity:0.9;">
-          {#if data.insights.executive_summary}
-            {@html renderMarkdown(data.insights.executive_summary)}
-          {:else}
-            {#each Object.entries(data.insights) as [key, val]}
-              <div style="margin-bottom:8px;"><strong style="text-transform:uppercase;font-size:10px;color:#00fc40;">{key}:</strong> {@html renderMarkdown(String(val))}</div>
-            {/each}
-          {/if}
+      <div class="section-block">
+        <div class="card card-flush ai-panel">
+          <div class="card-head">
+            <div class="card-head-title">AI Executive Summary</div>
+          </div>
+          <div class="card-body ai-content">
+            {#if data.insights.executive_summary}
+              {@html renderMarkdown(data.insights.executive_summary)}
+            {:else}
+              {#each Object.entries(data.insights) as [key, val]}
+                <div class="ai-kv"><strong>{key}:</strong> {@html renderMarkdown(String(val))}</div>
+              {/each}
+            {/if}
+          </div>
         </div>
       </div>
     {/if}
 
   <!-- ---- TAB 1: DATA EXPLORER ---- -->
   {:else if activeTab === 1}
-    <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
-      <select bind:value={classFilter}
-        style="padding:6px 12px;font-size:11px;font-weight:700;background:white;border:2px solid #383832;color:#383832;cursor:pointer;">
+    <div class="explorer-controls">
+      <select class="select" bind:value={classFilter}>
         <option>All</option>
         <option>Class A</option>
         <option>Class B</option>
         <option>Class C</option>
         <option>Class A Local (F4)</option>
       </select>
-      <input type="text" bind:value={searchQuery} placeholder="Search outlet name or code..."
-        style="flex:1;min-width:200px;padding:6px 12px;font-size:11px;border:2px solid #383832;background:white;color:#383832;" />
+      <input class="input explorer-search" type="text" bind:value={searchQuery} placeholder="Search outlet name or code..." />
     </div>
 
     <DataTable title="ALL OUTLETS" data={explorerData()} columns={explorerCols} maxHeight="600px" />
 
   <!-- ---- TAB 2: ANALYTICS ---- -->
   {:else if activeTab === 2}
-    <div style="margin-bottom:24px;">
+    <div class="section-block">
       <ChapterHeading title="Branch Revenue Comparison" subtitle="Relative revenue by branch" />
-      <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;padding:24px;">
+      <div class="card chart-card">
         {#each branchBars() as bar}
-          <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
-            <div style="min-width:120px;font-size:10px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:#383832;text-align:right;">{bar.name}</div>
-            <div style="flex:1;height:20px;background:#ebe8dd;">
-              <div style="height:100%;width:{bar.pct}%;background:#007518;transition:width 0.5s;"></div>
+          <div class="bar-row">
+            <div class="bar-label">{bar.name}</div>
+            <div class="bar-track">
+              <div class="bar-fill bar-fill-a" style="width:{bar.pct}%;"></div>
             </div>
-            <div style="min-width:80px;font-size:10px;font-weight:700;color:#383832;">{fmtNum(bar.revenue)}</div>
+            <div class="bar-value">{fmtNum(bar.revenue)}</div>
           </div>
         {/each}
         {#if branchBars().length === 0}
-          <div style="text-align:center;color:#828179;font-size:11px;padding:24px;">No branch data available</div>
+          <div class="empty-note">No branch data available</div>
         {/if}
       </div>
     </div>
 
-    <ChapterHeading title="Period Comparison" subtitle="Aggregate sales by time window" />
-    <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;padding:24px;">
-      {#each periodBars() as bar}
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
-          <div style="min-width:60px;font-size:11px;font-weight:900;letter-spacing:0.06em;color:#383832;text-align:right;">{bar.period}</div>
-          <div style="flex:1;height:24px;background:#ebe8dd;">
-            <div style="height:100%;width:{bar.pct}%;background:#006f7c;transition:width 0.5s;"></div>
+    <div class="section-block">
+      <ChapterHeading title="Period Comparison" subtitle="Aggregate sales by time window" />
+      <div class="card chart-card">
+        {#each periodBars() as bar}
+          <div class="bar-row">
+            <div class="bar-label bar-label-sm">{bar.period}</div>
+            <div class="bar-track bar-track-lg">
+              <div class="bar-fill bar-fill-f4" style="width:{bar.pct}%;"></div>
+            </div>
+            <div class="bar-value">{fmtNum(bar.value)}</div>
           </div>
-          <div style="min-width:90px;font-size:11px;font-weight:700;color:#383832;">{fmtNum(bar.value)}</div>
-        </div>
-      {/each}
+        {/each}
+      </div>
     </div>
 
     <!-- Trend Comparison Table -->
-    <div style="margin-bottom:24px;margin-top:24px;">
+    <div class="section-block">
       <ChapterHeading title="Trend Comparison" subtitle="Period-over-period growth by branch" />
-      <div style="border:3px solid #383832;box-shadow:4px 4px 0 #383832;overflow:hidden;">
-        <div style="padding:8px 12px;background:#383832;color:#feffd6;font-size:10px;font-weight:900;letter-spacing:0.1em;">GROWTH TRENDS</div>
-        <table style="width:100%;border-collapse:collapse;font-size:11px;">
-          <thead>
-            <tr>
-              <th style="background:#ebe8dd;padding:8px 12px;text-align:left;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">BRANCH</th>
-              <th style="background:#ebe8dd;padding:8px 12px;text-align:right;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">12M SALES</th>
-              <th style="background:#ebe8dd;padding:8px 12px;text-align:right;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">6M SALES</th>
-              <th style="background:#ebe8dd;padding:8px 12px;text-align:right;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">3M SALES</th>
-              <th style="background:#ebe8dd;padding:8px 12px;text-align:center;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">6M vs 12M</th>
-              <th style="background:#ebe8dd;padding:8px 12px;text-align:center;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">3M vs 6M</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each trendData() as row, i}
-              <tr style="background:{i % 2 === 0 ? 'white' : '#fcf9ef'};border-bottom:1px solid #ebe8dd;">
-                <td style="padding:8px 12px;font-weight:800;font-size:10px;">{row.Branch}</td>
-                <td style="padding:8px 12px;text-align:right;font-size:10px;font-weight:600;">{fmtNum(row['12M'])}</td>
-                <td style="padding:8px 12px;text-align:right;font-size:10px;font-weight:600;">{fmtNum(row['6M'])}</td>
-                <td style="padding:8px 12px;text-align:right;font-size:10px;font-weight:600;">{fmtNum(row['3M'])}</td>
-                <td style="padding:8px 12px;text-align:center;">
-                  <span style="font-size:10px;font-weight:900;padding:2px 8px;
-                    {row['6M vs 12M'] > 5 ? 'background:#dcfce7;color:#007518;' : row['6M vs 12M'] < -5 ? 'background:#fee2e2;color:#be2d06;' : 'background:#fef9c3;color:#856404;'}
-                  ">{row['6M vs 12M'] > 0 ? '+' : ''}{row['6M vs 12M'].toFixed(1)}%</span>
-                </td>
-                <td style="padding:8px 12px;text-align:center;">
-                  <span style="font-size:10px;font-weight:900;padding:2px 8px;
-                    {row['3M vs 6M'] > 5 ? 'background:#dcfce7;color:#007518;' : row['3M vs 6M'] < -5 ? 'background:#fee2e2;color:#be2d06;' : 'background:#fef9c3;color:#856404;'}
-                  ">{row['3M vs 6M'] > 0 ? '+' : ''}{row['3M vs 6M'].toFixed(1)}%</span>
-                </td>
+      <div class="card card-flush">
+        <div class="data-table-head"><span>Growth Trends</span></div>
+        <div class="data-table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Branch</th>
+                <th class="ta-r">12M Sales</th>
+                <th class="ta-r">6M Sales</th>
+                <th class="ta-r">3M Sales</th>
+                <th class="ta-c">6M vs 12M</th>
+                <th class="ta-c">3M vs 6M</th>
               </tr>
-            {/each}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {#each trendData() as row, i}
+                <tr>
+                  <td class="td-strong">{row.Branch}</td>
+                  <td class="ta-r">{fmtNum(row['12M'])}</td>
+                  <td class="ta-r">{fmtNum(row['6M'])}</td>
+                  <td class="ta-r">{fmtNum(row['3M'])}</td>
+                  <td class="ta-c">
+                    <span class="badge"
+                      class:badge-a={row['6M vs 12M'] > 5}
+                      class:badge-c={row['6M vs 12M'] < -5}
+                      class:badge-b={row['6M vs 12M'] >= -5 && row['6M vs 12M'] <= 5}
+                    >{row['6M vs 12M'] > 0 ? '+' : ''}{row['6M vs 12M'].toFixed(1)}%</span>
+                  </td>
+                  <td class="ta-c">
+                    <span class="badge"
+                      class:badge-a={row['3M vs 6M'] > 5}
+                      class:badge-c={row['3M vs 6M'] < -5}
+                      class:badge-b={row['3M vs 6M'] >= -5 && row['3M vs 6M'] <= 5}
+                    >{row['3M vs 6M'] > 0 ? '+' : ''}{row['3M vs 6M'].toFixed(1)}%</span>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
 
     <!-- Pareto Curve -->
-    <div style="margin-bottom:24px;">
+    <div class="section-block">
       <ChapterHeading title="Pareto Curve" subtitle="Cumulative revenue distribution — where do the thresholds fall?" />
-      <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;padding:24px;">
-        <svg viewBox="0 0 440 240" style="width:100%;max-height:300px;">
+      <div class="card chart-card">
+        <svg viewBox="0 0 440 240" class="pareto-svg">
           <!-- Grid lines -->
-          <line x1="20" y1="200" x2="420" y2="200" stroke="#ebe8dd" stroke-width="1"/>
-          <line x1="20" y1="160" x2="420" y2="160" stroke="#ebe8dd" stroke-width="1" stroke-dasharray="4"/>
-          <line x1="20" y1="120" x2="420" y2="120" stroke="#ebe8dd" stroke-width="1" stroke-dasharray="4"/>
-          <line x1="20" y1="80" x2="420" y2="80" stroke="#ebe8dd" stroke-width="1" stroke-dasharray="4"/>
-          <line x1="20" y1="40" x2="420" y2="40" stroke="#ebe8dd" stroke-width="1" stroke-dasharray="4"/>
-          <line x1="20" y1="0" x2="420" y2="0" stroke="#ebe8dd" stroke-width="1" stroke-dasharray="4"/>
+          <line x1="20" y1="200" x2="420" y2="200" stroke="var(--border)" stroke-width="1"/>
+          <line x1="20" y1="160" x2="420" y2="160" stroke="var(--border)" stroke-width="1" stroke-dasharray="4"/>
+          <line x1="20" y1="120" x2="420" y2="120" stroke="var(--border)" stroke-width="1" stroke-dasharray="4"/>
+          <line x1="20" y1="80" x2="420" y2="80" stroke="var(--border)" stroke-width="1" stroke-dasharray="4"/>
+          <line x1="20" y1="40" x2="420" y2="40" stroke="var(--border)" stroke-width="1" stroke-dasharray="4"/>
+          <line x1="20" y1="0" x2="420" y2="0" stroke="var(--border)" stroke-width="1" stroke-dasharray="4"/>
 
           <!-- Y axis labels -->
-          <text x="16" y="204" fill="#828179" font-size="8" text-anchor="end">0%</text>
-          <text x="16" y="164" fill="#828179" font-size="8" text-anchor="end">20%</text>
-          <text x="16" y="44" fill="#828179" font-size="8" text-anchor="end">80%</text>
-          <text x="16" y="12" fill="#828179" font-size="8" text-anchor="end">100%</text>
+          <text x="16" y="204" fill="var(--text-faint)" font-size="8" text-anchor="end">0%</text>
+          <text x="16" y="164" fill="var(--text-faint)" font-size="8" text-anchor="end">20%</text>
+          <text x="16" y="44" fill="var(--text-faint)" font-size="8" text-anchor="end">80%</text>
+          <text x="16" y="12" fill="var(--text-faint)" font-size="8" text-anchor="end">100%</text>
 
           <!-- 80% threshold line -->
           {#if paretoCurve().a_x}
-            <line x1={20 + paretoCurve().a_x} y1="0" x2={20 + paretoCurve().a_x} y2="200" stroke="#007518" stroke-width="2" stroke-dasharray="6,3"/>
-            <line x1="20" y1="40" x2="420" y2="40" stroke="#007518" stroke-width="1" stroke-dasharray="6,3"/>
-            <text x={22 + paretoCurve().a_x} y="216" fill="#007518" font-size="8" font-weight="900">A 80%</text>
+            <line x1={20 + paretoCurve().a_x} y1="0" x2={20 + paretoCurve().a_x} y2="200" stroke="var(--class-a)" stroke-width="2" stroke-dasharray="6,3"/>
+            <line x1="20" y1="40" x2="420" y2="40" stroke="var(--class-a)" stroke-width="1" stroke-dasharray="6,3"/>
+            <text x={22 + paretoCurve().a_x} y="216" fill="var(--class-a)" font-size="8" font-weight="700">A 80%</text>
           {/if}
 
           <!-- 95% threshold line -->
           {#if paretoCurve().b_x}
-            <line x1={20 + paretoCurve().b_x} y1="0" x2={20 + paretoCurve().b_x} y2="200" stroke="#ff9d00" stroke-width="2" stroke-dasharray="6,3"/>
-            <line x1="20" y1="10" x2="420" y2="10" stroke="#ff9d00" stroke-width="1" stroke-dasharray="6,3"/>
-            <text x={22 + paretoCurve().b_x} y="228" fill="#ff9d00" font-size="8" font-weight="900">B 95%</text>
+            <line x1={20 + paretoCurve().b_x} y1="0" x2={20 + paretoCurve().b_x} y2="200" stroke="var(--class-b)" stroke-width="2" stroke-dasharray="6,3"/>
+            <line x1="20" y1="10" x2="420" y2="10" stroke="var(--class-b)" stroke-width="1" stroke-dasharray="6,3"/>
+            <text x={22 + paretoCurve().b_x} y="228" fill="var(--class-b)" font-size="8" font-weight="700">B 95%</text>
           {/if}
 
           <!-- Curve -->
-          <polyline points={paretoCurve().points.split(' ').map(p => { const [x,y] = p.split(','); return `${20+Number(x)},${Number(y)}`; }).join(' ')} fill="none" stroke="#383832" stroke-width="2.5"/>
+          <polyline points={paretoCurve().points.split(' ').map(p => { const [x,y] = p.split(','); return `${20+Number(x)},${Number(y)}`; }).join(' ')} fill="none" stroke="var(--text-muted)" stroke-width="2.5"/>
 
           <!-- Fill area under curve -->
-          <polygon points={`20,200 ${paretoCurve().points.split(' ').map(p => { const [x,y] = p.split(','); return `${20+Number(x)},${Number(y)}`; }).join(' ')} 420,200`} fill="rgba(0,117,24,0.08)"/>
+          <polygon points={`20,200 ${paretoCurve().points.split(' ').map(p => { const [x,y] = p.split(','); return `${20+Number(x)},${Number(y)}`; }).join(' ')} 420,200`} fill="var(--success-soft)"/>
 
           <!-- X axis label -->
-          <text x="220" y="238" fill="#828179" font-size="8" text-anchor="middle">% OF OUTLETS (RANKED BY REVENUE)</text>
+          <text x="220" y="238" fill="var(--text-faint)" font-size="8" text-anchor="middle">% of outlets (ranked by revenue)</text>
         </svg>
 
         <!-- Legend -->
-        <div style="display:flex;gap:16px;justify-content:center;margin-top:8px;font-size:9px;font-weight:700;">
-          <span style="display:flex;align-items:center;gap:4px;"><span style="width:12px;height:3px;background:#007518;"></span> CLASS A (80%)</span>
-          <span style="display:flex;align-items:center;gap:4px;"><span style="width:12px;height:3px;background:#ff9d00;"></span> CLASS B (95%)</span>
-          <span style="display:flex;align-items:center;gap:4px;"><span style="width:12px;height:3px;background:#be2d06;"></span> CLASS C</span>
+        <div class="chart-legend">
+          <span class="legend-item"><span class="legend-swatch" style="background:var(--class-a);"></span> Class A (80%)</span>
+          <span class="legend-item"><span class="legend-swatch" style="background:var(--class-b);"></span> Class B (95%)</span>
+          <span class="legend-item"><span class="legend-swatch" style="background:var(--class-c);"></span> Class C</span>
         </div>
       </div>
     </div>
 
     <!-- Outlet Channel Breakdown -->
-    <div style="margin-bottom:24px;">
+    <div class="section-block">
       <ChapterHeading title="Outlet Channel Breakdown" subtitle="Distribution by channel type" />
-      <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;padding:24px;">
+      <div class="card chart-card">
         {#each channelBars() as bar}
-          <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
-            <div style="min-width:140px;font-size:10px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:#383832;text-align:right;">{bar.name}</div>
-            <div style="flex:1;height:20px;background:#ebe8dd;">
-              <div style="height:100%;width:{bar.pct}%;background:#006f7c;transition:width 0.5s;"></div>
+          <div class="bar-row">
+            <div class="bar-label bar-label-wide">{bar.name}</div>
+            <div class="bar-track">
+              <div class="bar-fill bar-fill-f4" style="width:{bar.pct}%;"></div>
             </div>
-            <div style="min-width:60px;font-size:10px;font-weight:700;color:#383832;">{bar.count.toLocaleString()}</div>
+            <div class="bar-value">{bar.count.toLocaleString()}</div>
           </div>
         {/each}
         {#if channelBars().length === 0}
-          <div style="text-align:center;color:#828179;font-size:11px;padding:24px;">No channel data</div>
+          <div class="empty-note">No channel data</div>
         {/if}
       </div>
     </div>
 
     <!-- Risk Heatmap -->
-    <div style="margin-bottom:24px;">
+    <div class="section-block">
       <ChapterHeading title="Risk Heatmap" subtitle="Branch x risk level distribution" />
-      <div style="border:3px solid #383832;box-shadow:4px 4px 0 #383832;overflow:hidden;">
-        <div style="padding:8px 12px;background:#383832;color:#feffd6;font-size:10px;font-weight:900;letter-spacing:0.1em;">RISK MATRIX</div>
-        <table style="width:100%;border-collapse:collapse;font-size:11px;">
-          <thead>
-            <tr>
-              <th style="background:#ebe8dd;padding:8px 12px;text-align:left;font-size:9px;font-weight:900;letter-spacing:0.08em;border-bottom:2px solid #383832;">BRANCH</th>
-              <th style="background:#ebe8dd;padding:8px 12px;text-align:center;font-size:9px;font-weight:900;color:#007518;border-bottom:2px solid #383832;">LOW</th>
-              <th style="background:#ebe8dd;padding:8px 12px;text-align:center;font-size:9px;font-weight:900;color:#ff9d00;border-bottom:2px solid #383832;">MEDIUM</th>
-              <th style="background:#ebe8dd;padding:8px 12px;text-align:center;font-size:9px;font-weight:900;color:#be2d06;border-bottom:2px solid #383832;">HIGH</th>
-              <th style="background:#ebe8dd;padding:8px 12px;text-align:center;font-size:9px;font-weight:900;border-bottom:2px solid #383832;">TOTAL</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each riskMatrix() as row, i}
-              <tr style="background:{i % 2 === 0 ? 'white' : '#fcf9ef'};border-bottom:1px solid #ebe8dd;">
-                <td style="padding:8px 12px;font-weight:800;font-size:10px;">{row.Branch}</td>
-                <td style="padding:8px 12px;text-align:center;background:rgba(0,117,24,{Math.min(row.Low / Math.max(row.Total, 1), 1) * 0.2});font-weight:700;">{row.Low}</td>
-                <td style="padding:8px 12px;text-align:center;background:rgba(255,157,0,{Math.min(row.Medium / Math.max(row.Total, 1), 1) * 0.3});font-weight:700;">{row.Medium}</td>
-                <td style="padding:8px 12px;text-align:center;background:rgba(190,45,6,{Math.min(row.High / Math.max(row.Total, 1), 1) * 0.3});font-weight:700;">{row.High}</td>
-                <td style="padding:8px 12px;text-align:center;font-weight:700;">{row.Total}</td>
+      <div class="card card-flush">
+        <div class="data-table-head"><span>Risk Matrix</span></div>
+        <div class="data-table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Branch</th>
+                <th class="ta-c" style="color:var(--class-a);">Low</th>
+                <th class="ta-c" style="color:var(--class-b);">Medium</th>
+                <th class="ta-c" style="color:var(--class-c);">High</th>
+                <th class="ta-c">Total</th>
               </tr>
-            {/each}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {#each riskMatrix() as row, i}
+                <tr>
+                  <td class="td-strong">{row.Branch}</td>
+                  <td class="ta-c td-strong" style="background:color-mix(in srgb, var(--class-a) {Math.min(row.Low / Math.max(row.Total, 1), 1) * 22}%, transparent);">{row.Low}</td>
+                  <td class="ta-c td-strong" style="background:color-mix(in srgb, var(--class-b) {Math.min(row.Medium / Math.max(row.Total, 1), 1) * 30}%, transparent);">{row.Medium}</td>
+                  <td class="ta-c td-strong" style="background:color-mix(in srgb, var(--class-c) {Math.min(row.High / Math.max(row.Total, 1), 1) * 30}%, transparent);">{row.High}</td>
+                  <td class="ta-c td-strong">{row.Total}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
 
   <!-- ---- TAB 3: AI INSIGHTS ---- -->
   {:else if activeTab === 3}
     <!-- Executive summary -->
-    <div style="background:#383832;color:#feffd6;border:3px solid #383832;box-shadow:4px 4px 0 #383832;margin-bottom:24px;">
-      <div style="padding:12px 16px;font-size:11px;font-weight:900;letter-spacing:0.1em;border-bottom:1px solid rgba(254,255,214,0.15);">AI EXECUTIVE SUMMARY</div>
-      <div style="padding:16px;font-size:12px;line-height:1.6;opacity:0.9;">
-        {#if data.insights?.executive_summary}
-          {@html renderMarkdown(data.insights.executive_summary)}
-        {:else if data.insights}
-          {#each Object.entries(data.insights) as [key, val]}
-            <div style="margin-bottom:8px;"><strong style="text-transform:uppercase;font-size:10px;color:#00fc40;">{key}:</strong> {@html renderMarkdown(String(val))}</div>
-          {/each}
-        {:else}
-          <span style="opacity:0.5;">No AI insights generated for this run.</span>
-        {/if}
+    <div class="section-block">
+      <div class="card card-flush ai-panel">
+        <div class="card-head">
+          <div class="card-head-title">AI Executive Summary</div>
+        </div>
+        <div class="card-body ai-content">
+          {#if data.insights?.executive_summary}
+            {@html renderMarkdown(data.insights.executive_summary)}
+          {:else if data.insights}
+            {#each Object.entries(data.insights) as [key, val]}
+              <div class="ai-kv"><strong>{key}:</strong> {@html renderMarkdown(String(val))}</div>
+            {/each}
+          {:else}
+            <span class="empty-note">No AI insights generated for this run.</span>
+          {/if}
+        </div>
       </div>
     </div>
 
     <!-- Growth analysis -->
     {#if data.insights?.growth_analysis}
-      <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;margin-bottom:24px;">
-        <div style="padding:10px 16px;background:#006f7c;color:white;font-size:11px;font-weight:900;letter-spacing:0.1em;">GROWTH ANALYSIS</div>
-        <div style="padding:16px;font-size:12px;line-height:1.5;color:#383832;">
-          {@html renderMarkdown(data.insights.growth_analysis)}
+      <div class="section-block">
+        <div class="card card-flush">
+          <div class="card-head card-head-accent" style="--head-accent:var(--class-f4);">
+            <div class="card-head-title">Growth Analysis</div>
+          </div>
+          <div class="card-body ai-content-light">
+            {@html renderMarkdown(data.insights.growth_analysis)}
+          </div>
         </div>
       </div>
     {/if}
 
     <!-- Recommendation cards -->
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:24px;">
+    <div class="rec-grid">
       <!-- Class A card -->
-      <div style="background:white;border:3px solid #007518;box-shadow:4px 4px 0 #383832;">
-        <div style="padding:10px 16px;background:#007518;color:white;font-size:11px;font-weight:900;letter-spacing:0.1em;">CLASS A RECOMMENDATIONS</div>
-        <div style="padding:16px;font-size:12px;line-height:1.5;color:#383832;">
-          <div style="margin-bottom:8px;font-weight:700;">{kpis.classA} outlets generating ~80% of revenue</div>
+      <div class="card card-flush rec-card" style="--rec:var(--class-a);">
+        <div class="card-head card-head-accent" style="--head-accent:var(--class-a);">
+          <div class="card-head-title">Class A Recommendations</div>
+        </div>
+        <div class="card-body ai-content-light">
+          <div class="rec-summary">{kpis.classA} outlets generating ~80% of revenue</div>
           {#if data.insights?.class_a_recommendations || data.insights?.class_a_recs}
             {@html renderMarkdown(data.insights.class_a_recommendations || data.insights.class_a_recs)}
           {:else}
-            <ul style="margin:0;padding-left:16px;font-size:11px;color:#65655e;">
+            <ul class="rec-list">
               <li>Assign dedicated sales reps</li>
               <li>Weekly visit cadence minimum</li>
               <li>Priority for promotions and new launches</li>
@@ -1432,14 +1390,16 @@
       </div>
 
       <!-- Class B card -->
-      <div style="background:white;border:3px solid #ff9d00;box-shadow:4px 4px 0 #383832;">
-        <div style="padding:10px 16px;background:#ff9d00;color:white;font-size:11px;font-weight:900;letter-spacing:0.1em;">CLASS B RECOMMENDATIONS</div>
-        <div style="padding:16px;font-size:12px;line-height:1.5;color:#383832;">
-          <div style="margin-bottom:8px;font-weight:700;">{kpis.classB} outlets in the growth tier</div>
+      <div class="card card-flush rec-card" style="--rec:var(--class-b);">
+        <div class="card-head card-head-accent" style="--head-accent:var(--class-b);">
+          <div class="card-head-title">Class B Recommendations</div>
+        </div>
+        <div class="card-body ai-content-light">
+          <div class="rec-summary">{kpis.classB} outlets in the growth tier</div>
           {#if data.insights?.class_b_recommendations || data.insights?.class_b_recs}
             {@html renderMarkdown(data.insights.class_b_recommendations || data.insights.class_b_recs)}
           {:else}
-            <ul style="margin:0;padding-left:16px;font-size:11px;color:#65655e;">
+            <ul class="rec-list">
               <li>Bi-weekly visit schedule</li>
               <li>Identify potential upgrades to Class A</li>
               <li>Cross-sell and upsell opportunities</li>
@@ -1450,14 +1410,16 @@
       </div>
 
       <!-- Class C card -->
-      <div style="background:white;border:3px solid #be2d06;box-shadow:4px 4px 0 #383832;">
-        <div style="padding:10px 16px;background:#be2d06;color:white;font-size:11px;font-weight:900;letter-spacing:0.1em;">CLASS C RECOMMENDATIONS</div>
-        <div style="padding:16px;font-size:12px;line-height:1.5;color:#383832;">
-          <div style="margin-bottom:8px;font-weight:700;">{kpis.classC} outlets in the tail</div>
+      <div class="card card-flush rec-card" style="--rec:var(--class-c);">
+        <div class="card-head card-head-accent" style="--head-accent:var(--class-c);">
+          <div class="card-head-title">Class C Recommendations</div>
+        </div>
+        <div class="card-body ai-content-light">
+          <div class="rec-summary">{kpis.classC} outlets in the tail</div>
           {#if data.insights?.class_c_recommendations || data.insights?.class_c_recs}
             {@html renderMarkdown(data.insights.class_c_recommendations || data.insights.class_c_recs)}
           {:else}
-            <ul style="margin:0;padding-left:16px;font-size:11px;color:#65655e;">
+            <ul class="rec-list">
               <li>Monthly or on-demand visits</li>
               <li>Telesales or digital ordering</li>
               <li>Evaluate cost-to-serve vs. revenue</li>
@@ -1468,77 +1430,207 @@
       </div>
     </div>
 
-  <!-- ---- TAB 4: LOG ---- -->
+  <!-- ---- TAB 4: COMPARISON ---- -->
   {:else if activeTab === 4}
+    <ChapterHeading title="Run Comparison" subtitle="This run vs the previous run" />
+
+    {#if !comparison}
+      <div class="empty-note">Run or load a job to see the comparison.</div>
+    {:else if comparison.has_previous === false}
+      <div class="alert alert-info">No previous run to compare against — this is the first job.</div>
+    {:else}
+      <div class="section-sub">
+        This run {comparison.current?.job_id} vs previous {comparison.previous?.job_id}
+      </div>
+
+      <!-- Movement summary -->
+      <div class="grid-kpi" style="margin-bottom:24px;">
+        <div class="kpi">
+          <div class="kpi-label">Upgraded</div>
+          <div class="kpi-value" style="color:var(--success);">{(comparison.movement?.upgraded ?? 0).toLocaleString()}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Downgraded</div>
+          <div class="kpi-value" style="color:var(--danger);">{(comparison.movement?.downgraded ?? 0).toLocaleString()}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Unchanged</div>
+          <div class="kpi-value" style="color:var(--text-muted);">{(comparison.movement?.unchanged ?? 0).toLocaleString()}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">New Outlets</div>
+          <div class="kpi-value">{(comparison.movement?.new ?? 0).toLocaleString()}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Lost Outlets</div>
+          <div class="kpi-value">{(comparison.movement?.lost ?? 0).toLocaleString()}</div>
+        </div>
+      </div>
+
+      <!-- Summary -->
+      <div class="section-head">
+        <span class="dot"></span>
+        <h3>Summary</h3>
+      </div>
+      <div class="data-table-wrap" style="margin-bottom:24px;">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th style="text-align:right;">This Run</th>
+              <th style="text-align:right;">Previous Run</th>
+              <th style="text-align:right;">Change</th>
+              <th>Remark</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each comparison.summary ?? [] as row}
+              <tr>
+                <td>{row.metric}</td>
+                <td style="text-align:right;">{fmtMaybeNum(row.current)}</td>
+                <td style="text-align:right;">{fmtMaybeNum(row.previous)}</td>
+                <td style="text-align:right; color:{changeColor(row.change)};">
+                  {row.change > 0 ? '+' : ''}{fmtMaybeNum(row.change)}
+                </td>
+                <td>{row.remark}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- By Channel -->
+      <div class="section-head">
+        <span class="dot"></span>
+        <h3>By Channel</h3>
+      </div>
+      <div class="data-table-wrap" style="margin-bottom:24px;">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th style="text-align:right;">This Run</th>
+              <th style="text-align:right;">Previous Run</th>
+              <th style="text-align:right;">Change</th>
+              <th>Remark</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each comparison.by_channel ?? [] as row}
+              <tr>
+                <td>{row.metric}</td>
+                <td style="text-align:right;">{fmtMaybeNum(row.current)}</td>
+                <td style="text-align:right;">{fmtMaybeNum(row.previous)}</td>
+                <td style="text-align:right; color:{changeColor(row.change)};">
+                  {row.change > 0 ? '+' : ''}{fmtMaybeNum(row.change)}
+                </td>
+                <td>{row.remark}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- By Branch -->
+      <div class="section-head">
+        <span class="dot"></span>
+        <h3>By Branch</h3>
+      </div>
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th style="text-align:right;">This Run</th>
+              <th style="text-align:right;">Previous Run</th>
+              <th style="text-align:right;">Change</th>
+              <th>Remark</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each comparison.by_branch ?? [] as row}
+              <tr>
+                <td>{row.metric}</td>
+                <td style="text-align:right;">{fmtMaybeNum(row.current)}</td>
+                <td style="text-align:right;">{fmtMaybeNum(row.previous)}</td>
+                <td style="text-align:right; color:{changeColor(row.change)};">
+                  {row.change > 0 ? '+' : ''}{fmtMaybeNum(row.change)}
+                </td>
+                <td>{row.remark}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+
+  <!-- ---- TAB 5: LOG ---- -->
+  {:else if activeTab === 5}
     <ChapterHeading title="Pipeline Log" subtitle="Step-by-step execution trace" />
-    <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;padding:16px;">
+    <div class="card">
       {#if logEntries.length > 0}
         {#each logEntries as entry, i}
-          <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid #ebe8dd;animation:fadeIn 0.3s ease-in;animation-delay:{i * 0.05}s;">
-            <span style="color:#007518;font-size:14px;font-weight:900;line-height:1;">&#10003;</span>
-            <span style="font-size:11px;font-weight:600;color:#383832;font-family:monospace;">{entry}</span>
+          <div class="log-row">
+            <span class="log-check">✓</span>
+            <span class="log-text">{entry}</span>
           </div>
         {/each}
       {:else}
-        <div style="text-align:center;color:#828179;font-size:11px;padding:24px;">No log entries recorded</div>
+        <div class="empty-note">No log entries recorded</div>
       {/if}
     </div>
 
-  <!-- ---- TAB 5: EXPORT ---- -->
-  {:else if activeTab === 5}
+  <!-- ---- TAB 6: EXPORT ---- -->
+  {:else if activeTab === 6}
     <ChapterHeading title="Export Results" subtitle="Download classified data" />
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;">
+    <div class="export-grid">
       <!-- Excel export -->
-      <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;">
-        <div style="padding:12px 16px;background:#383832;color:#feffd6;font-size:11px;font-weight:900;letter-spacing:0.1em;">EXCEL EXPORT (.XLSX)</div>
-        <div style="padding:20px;">
-          <div style="font-size:11px;color:#383832;margin-bottom:16px;line-height:1.5;">
-            Multi-sheet workbook with:
-          </div>
-          <ul style="margin:0 0 16px 0;padding-left:16px;font-size:11px;color:#65655e;">
+      <div class="card card-flush">
+        <div class="card-head">
+          <div class="card-head-title">Excel Export (.xlsx)</div>
+        </div>
+        <div class="card-body">
+          <div class="export-desc">Multi-sheet workbook with:</div>
+          <ul class="export-list">
             <li>All Outlets (classified)</li>
             <li>Branch Summary</li>
             <li>Class A / B / C sheets</li>
             <li>AI Insights</li>
             <li>Pipeline Log</li>
           </ul>
-          <button
-            onclick={() => exportExcel(data.job_id)}
-            style="width:100%;padding:10px;font-size:11px;font-weight:900;letter-spacing:0.1em;background:#00fc40;color:#383832;border:2px solid #383832;box-shadow:3px 3px 0 #383832;cursor:pointer;"
-          >
-            DOWNLOAD EXCEL
+          <button class="btn btn-block" onclick={() => exportExcel(data.job_id)}>
+            Download Excel
           </button>
         </div>
       </div>
 
       <!-- Filtered export card -->
-      <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;padding:24px;">
-        <div style="font-size:12px;font-weight:900;color:#383832;margin-bottom:8px;">EXPORT FILTERED DATA</div>
-        <div style="font-size:10px;color:#65655e;margin-bottom:16px;">
+      <div class="card">
+        <div class="export-card-title">Export Filtered Data</div>
+        <div class="export-desc">
           Downloads only the currently visible results ({filteredResults.length.toLocaleString()} outlets)
           {#if selectedBranch !== 'All Branches'} — filtered by {selectedBranch}{/if}
         </div>
-        <button onclick={exportFilteredCSV}
-          style="padding:10px 24px;font-size:11px;font-weight:900;letter-spacing:0.1em;background:#006f7c;color:white;border:2px solid #383832;box-shadow:3px 3px 0 #383832;cursor:pointer;font-family:'Space Grotesk',sans-serif;"
-          onmousedown={(e) => { e.currentTarget.style.transform='translate(2px,2px)'; e.currentTarget.style.boxShadow='1px 1px 0 #383832'; }}
-          onmouseup={(e) => { e.currentTarget.style.transform='translate(0,0)'; e.currentTarget.style.boxShadow='3px 3px 0 #383832'; }}
-        >EXPORT FILTERED CSV ({filteredResults.length.toLocaleString()} ROWS)</button>
+        <button class="btn" onclick={exportFilteredCSV}>
+          Export Filtered CSV ({filteredResults.length.toLocaleString()} rows)
+        </button>
       </div>
 
       <!-- CSV export -->
-      <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;">
-        <div style="padding:12px 16px;background:#383832;color:#feffd6;font-size:11px;font-weight:900;letter-spacing:0.1em;">CSV EXPORT (.CSV)</div>
-        <div style="padding:20px;">
-          <div style="font-size:11px;color:#383832;margin-bottom:16px;line-height:1.5;">
-            Flat file export with all columns:
-          </div>
-          <ul style="margin:0 0 16px 0;padding-left:16px;font-size:11px;color:#65655e;">
+      <div class="card card-flush">
+        <div class="card-head">
+          <div class="card-head-title">CSV Export (.csv)</div>
+        </div>
+        <div class="card-body">
+          <div class="export-desc">Flat file export with all columns:</div>
+          <ul class="export-list">
             <li>All classification fields</li>
             <li>Sales aggregates (2Yr/12M/6M/3M)</li>
             <li>AI enrichment columns</li>
             <li>Contribution percentages</li>
           </ul>
           <button
+            class="btn btn-block"
             onclick={() => {
               if (!data) return;
               const header = explorerCols.join(',');
@@ -1552,12 +1644,877 @@
               a.click();
               URL.revokeObjectURL(url);
             }}
-            style="width:100%;padding:10px;font-size:11px;font-weight:900;letter-spacing:0.1em;background:#006f7c;color:white;border:2px solid #383832;box-shadow:3px 3px 0 #383832;cursor:pointer;"
           >
-            DOWNLOAD CSV
+            Download CSV
           </button>
         </div>
       </div>
     </div>
   {/if}
 {/if}
+
+<style>
+  /* ===== Hero ===== */
+  .page-hero {
+    margin-bottom: 24px;
+  }
+  .page-hero h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--text);
+    margin: 0;
+  }
+  .page-hero p {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin: 4px 0 0;
+  }
+
+  /* ===== Upload ===== */
+  .upload-wrap {
+    max-width: 680px;
+    margin: 0 auto;
+  }
+  .upload-card {
+    padding: 28px;
+  }
+
+  .drop-icon {
+    font-size: 1.8rem;
+    color: var(--text-faint);
+    margin-bottom: 10px;
+    line-height: 1;
+  }
+  .drop-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+  .drop-sub {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+  .drop-hint {
+    font-size: 0.72rem;
+    color: var(--text-faint);
+    margin-top: 10px;
+  }
+
+  .file-selected {
+    border: 1px solid var(--success);
+    background: var(--success-soft);
+    border-radius: var(--r-md);
+    padding: 16px 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .file-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .file-check {
+    width: 34px;
+    height: 34px;
+    border-radius: var(--r-sm);
+    background: var(--success);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.9rem;
+    flex-shrink: 0;
+  }
+  .file-name {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .file-meta {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+  .file-remove {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    flex-shrink: 0;
+  }
+
+  .threshold-row {
+    margin-top: 22px;
+    display: flex;
+    gap: 24px;
+  }
+  .threshold-field {
+    flex: 1;
+  }
+  .range {
+    width: 100%;
+    cursor: pointer;
+    accent-color: var(--accent);
+  }
+  .range-a { accent-color: var(--class-a); }
+  .range-b { accent-color: var(--class-b); }
+
+  .preview-kpis {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-top: 18px;
+  }
+
+  .run-btn {
+    margin-top: 22px;
+  }
+
+  /* ===== Info blocks (upload) ===== */
+  .info-block {
+    margin-top: 24px;
+  }
+  .info-block-last {
+    margin-bottom: 32px;
+  }
+
+  .card-head {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .card-head-accent {
+    border-bottom: 2px solid var(--head-accent, var(--border));
+  }
+  .card-head-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .card-head-sub {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+  .card-body {
+    padding: 20px;
+  }
+
+  .pipeline-steps {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+  }
+  .pstep {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .pstep-inner {
+    width: 56px;
+    text-align: center;
+  }
+  .pstep-num {
+    width: 34px;
+    height: 34px;
+    border-radius: var(--r-md);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7rem;
+    font-weight: 600;
+    margin: 0 auto;
+  }
+  .pstep-label {
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-top: 5px;
+  }
+  .pstep-arrow {
+    font-size: 0.85rem;
+    color: var(--text-faint);
+    margin: 0 2px;
+  }
+
+  .how-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .how-item {
+    padding: 8px 12px;
+    background: var(--surface-2);
+    border-radius: var(--r-sm);
+    border-left: 3px solid var(--border);
+    font-size: 0.74rem;
+    color: var(--text-muted);
+  }
+
+  .cols-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .col-card {
+    padding: 8px 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+  }
+  .col-name {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--success);
+    font-family: var(--font-mono);
+  }
+  .col-desc {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+  .optional-row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .optional-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+  }
+
+  .get-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .get-item {
+    padding: 5px 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    color: var(--text);
+  }
+  .get-check {
+    width: 18px;
+    height: 18px;
+    border-radius: var(--r-sm);
+    background: var(--success-soft);
+    color: var(--success);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  /* ===== Processing ===== */
+  .proc-grid {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 16px;
+    min-height: 500px;
+  }
+  .proc-left {
+    display: flex;
+    flex-direction: column;
+  }
+  .proc-steps {
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    overflow-y: auto;
+    flex: 1;
+  }
+  .proc-step {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    transition: all 0.2s;
+  }
+  .proc-step.done {
+    border-color: var(--success);
+    background: var(--success-soft);
+  }
+  .proc-step.active {
+    border-color: var(--warning);
+    background: var(--warning-soft);
+  }
+  .proc-step.pending {
+    opacity: 0.5;
+  }
+  .proc-step-num {
+    width: 22px;
+    height: 22px;
+    border-radius: var(--r-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    font-weight: 700;
+    flex-shrink: 0;
+    background: var(--surface-3);
+    color: var(--text-muted);
+  }
+  .proc-step.done .proc-step-num {
+    background: var(--success);
+    color: #fff;
+  }
+  .proc-step.active .proc-step-num {
+    background: var(--warning);
+    color: #fff;
+  }
+  .proc-step-label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text);
+    flex: 1;
+  }
+  .proc-dots {
+    display: flex;
+    gap: 3px;
+  }
+  .proc-dots span {
+    width: 4px;
+    height: 4px;
+    border-radius: 0;
+    background: var(--warning);
+    animation: bounce 0.6s ease-in-out infinite;
+  }
+  .proc-dots span:nth-child(2) { animation-delay: 0.15s; }
+  .proc-dots span:nth-child(3) { animation-delay: 0.3s; }
+
+  .proc-progress {
+    padding: 14px;
+    border-top: 1px solid var(--border);
+  }
+  .proc-progress-label {
+    font-size: 0.68rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    margin-top: 6px;
+    text-align: center;
+  }
+
+  .proc-terminal {
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    overflow: hidden;
+  }
+  .cli-bar {
+    padding: 9px 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .cli-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 0;
+    background: var(--success);
+  }
+  .cli-bar-title {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--text-faint);
+    font-family: var(--font-mono);
+    letter-spacing: 0.04em;
+  }
+  .cli-bar-pid {
+    margin-left: auto;
+    font-size: 0.62rem;
+    color: var(--text-faint);
+    font-family: var(--font-mono);
+  }
+  .cli-scroll {
+    flex: 1;
+    padding: 12px 16px;
+    overflow-y: auto;
+    max-height: 500px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    line-height: 1.7;
+  }
+  .cli-line {
+    animation: fadeIn 0.15s ease-out;
+  }
+  .cli-blank {
+    height: 6px;
+  }
+  .cli-cursor-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .cli-cursor {
+    width: 8px;
+    height: 14px;
+    background: currentColor;
+    color: var(--success);
+    animation: blink 1s step-end infinite;
+  }
+  .pipeline-panel-cli {
+    padding: 0;
+    overflow-y: auto;
+  }
+  .pipeline-panel-cli .cli-scroll {
+    max-height: 450px;
+  }
+
+  /* ===== Pipeline bar (results) ===== */
+  .pipeline-bar {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 12px 16px;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    transition: background 0.15s, margin 0.2s;
+  }
+  .pipeline-bar:hover {
+    background: var(--surface-2);
+  }
+  .pipeline-bar.expanded {
+    margin-bottom: 0;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+  .pipeline-bar-left,
+  .pipeline-bar-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .pipeline-chevron {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    transition: transform 0.2s;
+    display: inline-block;
+  }
+  .pipeline-chevron.open {
+    transform: rotate(180deg);
+  }
+  .pipeline-bar-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .pipeline-bar-job {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+  }
+  .pipeline-bar-action {
+    font-size: 0.72rem;
+    color: var(--text-faint);
+  }
+
+  .pipeline-panel {
+    margin-bottom: 20px;
+    border: 1px solid var(--border);
+    border-top: none;
+    border-bottom-left-radius: var(--r-lg);
+    border-bottom-right-radius: var(--r-lg);
+    overflow: hidden;
+  }
+  .pipeline-panel-grid {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    min-height: 350px;
+    max-height: 450px;
+  }
+  .pipeline-panel-steps {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    overflow-y: auto;
+  }
+  .pipeline-panel-step {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--success);
+    border-radius: var(--r-sm);
+    background: var(--success-soft);
+  }
+  .pipeline-panel-check {
+    width: 18px;
+    height: 18px;
+    border-radius: var(--r-sm);
+    background: var(--success);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .pipeline-panel-label {
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--text);
+    flex: 1;
+  }
+
+  /* ===== Controls row ===== */
+  .controls-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .branch-filter,
+  .controls-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .branch-filter .label {
+    margin: 0;
+  }
+  .job-tag {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+  }
+
+  .results-kpis {
+    margin-bottom: 24px;
+  }
+  .results-tabs {
+    margin-bottom: 24px;
+  }
+
+  /* ===== Sections ===== */
+  .section-block {
+    margin-bottom: 24px;
+  }
+
+  /* ===== Data Quality ===== */
+  .dq-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .dq-row-top {
+    align-items: flex-start;
+  }
+  .dq-row:last-child {
+    border-bottom: none;
+  }
+  .dq-icon {
+    width: 20px;
+    height: 20px;
+    border-radius: var(--r-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: #fff;
+    flex-shrink: 0;
+  }
+  .dq-ok { background: var(--success); }
+  .dq-warn { background: var(--warning); }
+  .dq-miss { background: var(--danger); }
+  .dq-info { background: var(--info); }
+  .dq-text {
+    font-size: 0.78rem;
+    color: var(--text);
+  }
+  .dq-body { flex: 1; }
+  .dq-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 3px;
+  }
+  .dq-field {
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .dq-message {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+  .dq-impact {
+    font-size: 0.72rem;
+    color: var(--text-faint);
+    margin-top: 2px;
+    font-style: italic;
+  }
+
+  /* ===== Tables ===== */
+  .data-table-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .ta-c { text-align: center; }
+  .ta-r { text-align: right; }
+  .td-strong { font-weight: 600; }
+  .td-mono { font-family: var(--font-mono); }
+  .muted { color: var(--text-muted); }
+
+  /* ===== AI panels ===== */
+  .ai-content {
+    font-size: 0.82rem;
+    line-height: 1.65;
+    color: var(--text);
+  }
+  .ai-content-light {
+    font-size: 0.82rem;
+    line-height: 1.6;
+    color: var(--text);
+  }
+  .ai-kv {
+    margin-bottom: 8px;
+  }
+  .ai-kv strong {
+    text-transform: uppercase;
+    font-size: 0.68rem;
+    letter-spacing: 0.04em;
+    color: var(--accent);
+  }
+  :global(.ai-content .md-h2),
+  :global(.ai-content-light .md-h2) {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin: 16px 0 8px;
+    color: var(--text);
+  }
+  :global(.ai-content .md-h3),
+  :global(.ai-content-light .md-h3) {
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin: 14px 0 6px;
+    color: var(--text);
+  }
+  :global(.ai-content .md-li),
+  :global(.ai-content-light .md-li) {
+    padding-left: 16px;
+    margin: 4px 0;
+  }
+
+  /* ===== Recommendation cards ===== */
+  .rec-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .rec-card {
+    border-top: 3px solid var(--rec, var(--border));
+  }
+  .rec-summary {
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .rec-list {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+  .rec-list li {
+    margin: 3px 0;
+  }
+
+  /* ===== Charts ===== */
+  .chart-card {
+    padding: 24px;
+  }
+  .bar-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .bar-label {
+    min-width: 120px;
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: var(--text);
+    text-align: right;
+  }
+  .bar-label-sm {
+    min-width: 60px;
+    font-family: var(--font-mono);
+  }
+  .bar-label-wide {
+    min-width: 140px;
+  }
+  .bar-track {
+    flex: 1;
+    height: 20px;
+    background: var(--surface-3);
+    border-radius: var(--r-sm);
+    overflow: hidden;
+  }
+  .bar-track-lg {
+    height: 24px;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: var(--r-sm);
+    transition: width 0.5s;
+  }
+  .bar-fill-a { background: var(--class-a); }
+  .bar-fill-f4 { background: var(--class-f4); }
+  .bar-value {
+    min-width: 80px;
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: var(--text);
+    font-family: var(--font-mono);
+  }
+  .empty-note {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    padding: 24px;
+  }
+
+  .pareto-svg {
+    width: 100%;
+    max-height: 300px;
+  }
+  .chart-legend {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    margin-top: 8px;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .legend-swatch {
+    width: 12px;
+    height: 3px;
+    border-radius: 0;
+  }
+
+  /* ===== Explorer ===== */
+  .explorer-controls {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .explorer-search {
+    flex: 1;
+    min-width: 200px;
+  }
+
+  /* ===== Log ===== */
+  .log-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    animation: fadeIn 0.3s ease-in;
+  }
+  .log-row:last-child {
+    border-bottom: none;
+  }
+  .log-check {
+    color: var(--success);
+    font-size: 0.9rem;
+    font-weight: 700;
+    line-height: 1.3;
+  }
+  .log-text {
+    font-size: 0.78rem;
+    color: var(--text);
+    font-family: var(--font-mono);
+  }
+
+  /* ===== Export ===== */
+  .export-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+  }
+  .export-card-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 8px;
+  }
+  .export-desc {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+    line-height: 1.5;
+  }
+  .export-list {
+    margin: 0 0 16px;
+    padding-left: 18px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+  .export-list li {
+    margin: 3px 0;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+  @keyframes bounce {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-4px); }
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @media (max-width: 760px) {
+    .proc-grid { grid-template-columns: 1fr; }
+    .pipeline-panel-grid { grid-template-columns: 1fr; }
+    .how-grid, .get-grid { grid-template-columns: 1fr; }
+    .threshold-row { flex-direction: column; gap: 14px; }
+  }
+</style>

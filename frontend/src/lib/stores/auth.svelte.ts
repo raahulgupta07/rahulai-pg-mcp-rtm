@@ -8,6 +8,7 @@ interface User {
   username: string;
   role: string;
   display_name: string;
+  permissions?: string[];
 }
 
 class AuthStore {
@@ -15,7 +16,13 @@ class AuthStore {
   user = $state<User | null>(null);
 
   isAuthenticated = $derived(!!this.token && !!this.user);
-  isAdmin = $derived(this.user?.role === 'admin');
+  isAdmin = $derived(this.user?.role === 'admin' || this.user?.role === 'super_admin');
+  isSuperAdmin = $derived(this.user?.role === 'super_admin');
+
+  hasPerm(perm: string): boolean {
+    if (this.user?.role === 'super_admin') return true;
+    return this.user?.permissions?.includes(perm) ?? false;
+  }
 
   constructor() {
     if (typeof window !== 'undefined') {

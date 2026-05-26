@@ -1,0 +1,12 @@
+[
+  {
+    "id": "grp-5a779c23",
+    "name": "Analysts",
+    "description": "Rules + analytics access",
+    "permissions": [
+      "rules",
+      "analytics"
+    ],
+    "ldap_group": "cn=rtm-analysts"
+  }
+]

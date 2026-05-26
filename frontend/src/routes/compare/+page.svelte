@@ -20,11 +20,11 @@
 
   async function runCompare() {
     if (!job1 || !job2) {
-      error = 'SELECT BOTH JOBS';
+      error = 'Select both jobs';
       return;
     }
     if (job1 === job2) {
-      error = 'SELECT TWO DIFFERENT JOBS';
+      error = 'Select two different jobs';
       return;
     }
     error = '';
@@ -40,10 +40,10 @@
   }
 
   function fmt(n: number): string {
-    if (n >= 1_000_000_000) return '$' + (n / 1_000_000_000).toFixed(1) + 'B';
-    if (n >= 1_000_000) return '$' + (n / 1_000_000).toFixed(1) + 'M';
-    if (n >= 1_000) return '$' + (n / 1_000).toFixed(1) + 'K';
-    return '$' + n.toFixed(0);
+    if (n >= 1_000_000_000) return 'Ks ' + (n / 1_000_000_000).toFixed(1) + 'B';
+    if (n >= 1_000_000) return 'Ks ' + (n / 1_000_000).toFixed(1) + 'M';
+    if (n >= 1_000) return 'Ks ' + (n / 1_000).toFixed(1) + 'K';
+    return 'Ks ' + n.toFixed(0);
   }
 
   function fmtNum(n: number): string {
@@ -58,67 +58,40 @@
 
   function diffRevStr(a: number, b: number): string {
     const d = b - a;
-    if (d === 0) return '$0';
+    if (d === 0) return 'Ks 0';
     const prefix = d > 0 ? '+' : '-';
     const abs = Math.abs(d);
-    if (abs >= 1_000_000_000) return prefix + '$' + (abs / 1_000_000_000).toFixed(1) + 'B';
-    if (abs >= 1_000_000) return prefix + '$' + (abs / 1_000_000).toFixed(1) + 'M';
-    if (abs >= 1_000) return prefix + '$' + (abs / 1_000).toFixed(1) + 'K';
-    return prefix + '$' + abs.toFixed(0);
+    if (abs >= 1_000_000_000) return prefix + 'Ks ' + (abs / 1_000_000_000).toFixed(1) + 'B';
+    if (abs >= 1_000_000) return prefix + 'Ks ' + (abs / 1_000_000).toFixed(1) + 'M';
+    if (abs >= 1_000) return prefix + 'Ks ' + (abs / 1_000).toFixed(1) + 'K';
+    return prefix + 'Ks ' + abs.toFixed(0);
   }
 
   function diffColor(a: number, b: number): string {
-    if (b > a) return '#007518';
-    if (b < a) return '#be2d06';
-    return '#383832';
+    if (b > a) return 'var(--success)';
+    if (b < a) return 'var(--danger)';
+    return 'var(--text-muted)';
   }
 </script>
 
-<div style="
-  padding: 80px 24px 40px;
-  max-width: 1200px;
-  margin: 0 auto;
-  font-family: 'Space Grotesk', sans-serif;
-">
+<div class="page">
   <!-- Page title -->
-  <div style="
-    background: #383832; color: #00fc40;
-    padding: 10px 20px; font-weight: 900; font-size: 1.1rem;
-    letter-spacing: 0.08em; margin-bottom: 24px;
-    border: 2px solid #383832; box-shadow: 4px 4px 0 #383832;
-    display: inline-block;
-  ">
-    JOB COMPARISON // OUTLET MOVEMENT TRACKER
+  <div class="section-head">
+    <span class="dot"></span>
+    <div>
+      <h2>Job Comparison</h2>
+      <div class="section-sub">Outlet movement tracker between two classification runs</div>
+    </div>
   </div>
 
   <!-- Job selectors -->
-  <div style="
-    display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
-    margin-bottom: 20px;
-  ">
+  <div class="selector-grid">
     <!-- Job 1 -->
-    <div style="
-      border: 3px solid #383832; padding: 16px;
-      background: #feffd6; box-shadow: 4px 4px 0 #383832;
-    ">
-      <div style="
-        background: #006f7c; color: white; padding: 6px 12px;
-        font-weight: 900; font-size: 11px; letter-spacing: 0.12em;
-        margin-bottom: 12px; display: inline-block;
-        border: 2px solid #383832;
-      ">
-        JOB 1 (BASELINE)
-      </div>
-      <select
-        bind:value={job1}
-        style="
-          width: 100%; padding: 10px 12px; font-family: 'Space Grotesk', monospace;
-          font-size: 13px; font-weight: 700;
-          border: 2px solid #383832; background: white; color: #383832;
-          cursor: pointer; appearance: auto;
-        "
-      >
-        <option value="">-- SELECT BASELINE JOB --</option>
+    <div class="card">
+      <span class="badge badge-f4">Job 1 · Baseline</span>
+      <label class="label" for="job1-select">Select baseline job</label>
+      <select id="job1-select" class="select" bind:value={job1}>
+        <option value="">— Select baseline job —</option>
         {#each jobs as j}
           <option value={j.job_id}>{j.job_id} ({j.total_outlets || '?'} outlets)</option>
         {/each}
@@ -126,28 +99,11 @@
     </div>
 
     <!-- Job 2 -->
-    <div style="
-      border: 3px solid #383832; padding: 16px;
-      background: #feffd6; box-shadow: 4px 4px 0 #383832;
-    ">
-      <div style="
-        background: #9d4867; color: white; padding: 6px 12px;
-        font-weight: 900; font-size: 11px; letter-spacing: 0.12em;
-        margin-bottom: 12px; display: inline-block;
-        border: 2px solid #383832;
-      ">
-        JOB 2 (CURRENT)
-      </div>
-      <select
-        bind:value={job2}
-        style="
-          width: 100%; padding: 10px 12px; font-family: 'Space Grotesk', monospace;
-          font-size: 13px; font-weight: 700;
-          border: 2px solid #383832; background: white; color: #383832;
-          cursor: pointer; appearance: auto;
-        "
-      >
-        <option value="">-- SELECT CURRENT JOB --</option>
+    <div class="card">
+      <span class="badge badge-c">Job 2 · Current</span>
+      <label class="label" for="job2-select">Select current job</label>
+      <select id="job2-select" class="select" bind:value={job2}>
+        <option value="">— Select current job —</option>
         {#each jobs as j}
           <option value={j.job_id}>{j.job_id} ({j.total_outlets || '?'} outlets)</option>
         {/each}
@@ -156,183 +112,96 @@
   </div>
 
   <!-- Compare button -->
-  <div style="text-align: center; margin-bottom: 32px;">
-    <button
-      onclick={runCompare}
-      disabled={loading}
-      style="
-        padding: 14px 48px; background: {loading ? '#999' : '#00fc40'};
-        color: #383832; border: 3px solid #383832;
-        font-family: 'Space Grotesk', sans-serif;
-        font-size: 14px; font-weight: 900; letter-spacing: 0.12em;
-        cursor: {loading ? 'wait' : 'pointer'};
-        box-shadow: 4px 4px 0 #383832;
-        transition: transform 0.1s, box-shadow 0.1s;
-      "
-      onmousedown={(e) => {
-        e.currentTarget.style.transform = 'translate(2px, 2px)';
-        e.currentTarget.style.boxShadow = '2px 2px 0 #383832';
-      }}
-      onmouseup={(e) => {
-        e.currentTarget.style.transform = 'translate(0, 0)';
-        e.currentTarget.style.boxShadow = '4px 4px 0 #383832';
-      }}
-    >
-      {loading ? 'COMPARING...' : 'COMPARE'}
+  <div class="compare-action">
+    <button class="btn" onclick={runCompare} disabled={loading}>
+      {loading ? 'Comparing…' : 'Compare'}
     </button>
   </div>
 
   <!-- Error -->
   {#if error}
-    <div style="
-      background: #be2d06; color: white; padding: 12px 16px;
-      font-weight: 900; font-size: 12px; letter-spacing: 0.08em;
-      border: 2px solid #383832; margin-bottom: 24px;
-      box-shadow: 3px 3px 0 #383832;
-    ">
-      ERROR: {error}
-    </div>
+    <div class="alert alert-danger">{error}</div>
   {/if}
 
   <!-- Results -->
   {#if result}
     <!-- Movement Summary KPIs -->
-    <div style="
-      display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;
-      margin-bottom: 28px;
-    ">
-      <!-- Upgraded -->
-      <div style="
-        border: 3px solid #383832; padding: 16px; background: #feffd6;
-        box-shadow: 4px 4px 0 #383832; text-align: center;
-      ">
-        <div style="
-          background: #007518; color: white; padding: 4px 10px;
-          font-size: 10px; font-weight: 900; letter-spacing: 0.12em;
-          display: inline-block; border: 2px solid #383832; margin-bottom: 10px;
-        ">UPGRADED</div>
-        <div style="font-size: 2.2rem; font-weight: 900; color: #007518; line-height: 1;">
-          {result.summary.upgraded}
-        </div>
-        <div style="font-size: 10px; color: #666; font-weight: 700; margin-top: 4px; letter-spacing: 0.05em;">
-          OUTLETS MOVED UP
-        </div>
+    <div class="grid-kpi">
+      <div class="kpi">
+        <span class="kpi-label">Upgraded</span>
+        <span class="kpi-value" style="color:var(--success);">{result.summary.upgraded}</span>
+        <span class="kpi-sub">Outlets moved up</span>
       </div>
-
-      <!-- Downgraded -->
-      <div style="
-        border: 3px solid #383832; padding: 16px; background: #feffd6;
-        box-shadow: 4px 4px 0 #383832; text-align: center;
-      ">
-        <div style="
-          background: #be2d06; color: white; padding: 4px 10px;
-          font-size: 10px; font-weight: 900; letter-spacing: 0.12em;
-          display: inline-block; border: 2px solid #383832; margin-bottom: 10px;
-        ">DOWNGRADED</div>
-        <div style="font-size: 2.2rem; font-weight: 900; color: #be2d06; line-height: 1;">
-          {result.summary.downgraded}
-        </div>
-        <div style="font-size: 10px; color: #666; font-weight: 700; margin-top: 4px; letter-spacing: 0.05em;">
-          OUTLETS MOVED DOWN
-        </div>
+      <div class="kpi">
+        <span class="kpi-label">Downgraded</span>
+        <span class="kpi-value" style="color:var(--danger);">{result.summary.downgraded}</span>
+        <span class="kpi-sub">Outlets moved down</span>
       </div>
-
-      <!-- New -->
-      <div style="
-        border: 3px solid #383832; padding: 16px; background: #feffd6;
-        box-shadow: 4px 4px 0 #383832; text-align: center;
-      ">
-        <div style="
-          background: #006f7c; color: white; padding: 4px 10px;
-          font-size: 10px; font-weight: 900; letter-spacing: 0.12em;
-          display: inline-block; border: 2px solid #383832; margin-bottom: 10px;
-        ">NEW</div>
-        <div style="font-size: 2.2rem; font-weight: 900; color: #006f7c; line-height: 1;">
-          {result.summary.new_outlets}
-        </div>
-        <div style="font-size: 10px; color: #666; font-weight: 700; margin-top: 4px; letter-spacing: 0.05em;">
-          NEW OUTLETS
-        </div>
+      <div class="kpi">
+        <span class="kpi-label">New</span>
+        <span class="kpi-value" style="color:var(--info);">{result.summary.new_outlets}</span>
+        <span class="kpi-sub">New outlets</span>
       </div>
-
-      <!-- Lost -->
-      <div style="
-        border: 3px solid #383832; padding: 16px; background: #feffd6;
-        box-shadow: 4px 4px 0 #383832; text-align: center;
-      ">
-        <div style="
-          background: #ff9d00; color: #383832; padding: 4px 10px;
-          font-size: 10px; font-weight: 900; letter-spacing: 0.12em;
-          display: inline-block; border: 2px solid #383832; margin-bottom: 10px;
-        ">LOST</div>
-        <div style="font-size: 2.2rem; font-weight: 900; color: #ff9d00; line-height: 1;">
-          {result.summary.lost_outlets}
-        </div>
-        <div style="font-size: 10px; color: #666; font-weight: 700; margin-top: 4px; letter-spacing: 0.05em;">
-          OUTLETS REMOVED
-        </div>
+      <div class="kpi">
+        <span class="kpi-label">Lost</span>
+        <span class="kpi-value" style="color:var(--warning);">{result.summary.lost_outlets}</span>
+        <span class="kpi-sub">Outlets removed</span>
       </div>
     </div>
 
     <!-- Side-by-side stats table -->
-    <div style="
-      border: 3px solid #383832; background: #feffd6;
-      box-shadow: 4px 4px 0 #383832; margin-bottom: 28px;
-    ">
-      <div style="
-        background: #383832; color: #feffd6; padding: 10px 16px;
-        font-weight: 900; font-size: 12px; letter-spacing: 0.1em;
-      ">
-        SIDE-BY-SIDE STATISTICS
+    <div class="data-table-wrap">
+      <div class="data-table-head">
+        <span class="title">Side-by-side statistics</span>
       </div>
-      <div style="overflow-x: auto;">
-        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+      <div class="table-scroll">
+        <table class="data-table">
           <thead>
-            <tr style="background: #383832; color: #feffd6;">
-              <th style="padding: 10px 16px; text-align: left; font-weight: 900; font-size: 11px; letter-spacing: 0.08em; border-right: 2px solid #555;">METRIC</th>
-              <th style="padding: 10px 16px; text-align: right; font-weight: 900; font-size: 11px; letter-spacing: 0.08em; border-right: 2px solid #555;">JOB 1 (BASELINE)</th>
-              <th style="padding: 10px 16px; text-align: right; font-weight: 900; font-size: 11px; letter-spacing: 0.08em; border-right: 2px solid #555;">JOB 2 (CURRENT)</th>
-              <th style="padding: 10px 16px; text-align: right; font-weight: 900; font-size: 11px; letter-spacing: 0.08em;">CHANGE</th>
+            <tr>
+              <th>Metric</th>
+              <th class="num-col">Job 1 · Baseline</th>
+              <th class="num-col">Job 2 · Current</th>
+              <th class="num-col">Change</th>
             </tr>
           </thead>
           <tbody>
-            <tr style="border-bottom: 2px solid #e0e0c0;">
-              <td style="padding: 10px 16px; font-weight: 900; letter-spacing: 0.05em;">TOTAL OUTLETS</td>
-              <td style="padding: 10px 16px; text-align: right; font-family: monospace; font-weight: 700;">{fmtNum(result.job1.stats.total)}</td>
-              <td style="padding: 10px 16px; text-align: right; font-family: monospace; font-weight: 700;">{fmtNum(result.job2.stats.total)}</td>
-              <td style="padding: 10px 16px; text-align: right; font-family: monospace; font-weight: 900; color: {diffColor(result.job1.stats.total, result.job2.stats.total)};">
+            <tr>
+              <td class="metric-cell">Total outlets</td>
+              <td class="num">{fmtNum(result.job1.stats.total)}</td>
+              <td class="num">{fmtNum(result.job2.stats.total)}</td>
+              <td class="num change" style="color:{diffColor(result.job1.stats.total, result.job2.stats.total)};">
                 {diffStr(result.job1.stats.total, result.job2.stats.total)}
               </td>
             </tr>
-            <tr style="border-bottom: 2px solid #e0e0c0;">
-              <td style="padding: 10px 16px; font-weight: 900; letter-spacing: 0.05em;">CLASS A</td>
-              <td style="padding: 10px 16px; text-align: right; font-family: monospace; font-weight: 700;">{fmtNum(result.job1.stats.class_a)}</td>
-              <td style="padding: 10px 16px; text-align: right; font-family: monospace; font-weight: 700;">{fmtNum(result.job2.stats.class_a)}</td>
-              <td style="padding: 10px 16px; text-align: right; font-family: monospace; font-weight: 900; color: {diffColor(result.job1.stats.class_a, result.job2.stats.class_a)};">
+            <tr>
+              <td class="metric-cell">Class A</td>
+              <td class="num">{fmtNum(result.job1.stats.class_a)}</td>
+              <td class="num">{fmtNum(result.job2.stats.class_a)}</td>
+              <td class="num change" style="color:{diffColor(result.job1.stats.class_a, result.job2.stats.class_a)};">
                 {diffStr(result.job1.stats.class_a, result.job2.stats.class_a)}
               </td>
             </tr>
-            <tr style="border-bottom: 2px solid #e0e0c0;">
-              <td style="padding: 10px 16px; font-weight: 900; letter-spacing: 0.05em;">CLASS B</td>
-              <td style="padding: 10px 16px; text-align: right; font-family: monospace; font-weight: 700;">{fmtNum(result.job1.stats.class_b)}</td>
-              <td style="padding: 10px 16px; text-align: right; font-family: monospace; font-weight: 700;">{fmtNum(result.job2.stats.class_b)}</td>
-              <td style="padding: 10px 16px; text-align: right; font-family: monospace; font-weight: 900; color: {diffColor(result.job1.stats.class_b, result.job2.stats.class_b)};">
+            <tr>
+              <td class="metric-cell">Class B</td>
+              <td class="num">{fmtNum(result.job1.stats.class_b)}</td>
+              <td class="num">{fmtNum(result.job2.stats.class_b)}</td>
+              <td class="num change" style="color:{diffColor(result.job1.stats.class_b, result.job2.stats.class_b)};">
                 {diffStr(result.job1.stats.class_b, result.job2.stats.class_b)}
               </td>
             </tr>
-            <tr style="border-bottom: 2px solid #e0e0c0;">
-              <td style="padding: 10px 16px; font-weight: 900; letter-spacing: 0.05em;">CLASS C</td>
-              <td style="padding: 10px 16px; text-align: right; font-family: monospace; font-weight: 700;">{fmtNum(result.job1.stats.class_c)}</td>
-              <td style="padding: 10px 16px; text-align: right; font-family: monospace; font-weight: 700;">{fmtNum(result.job2.stats.class_c)}</td>
-              <td style="padding: 10px 16px; text-align: right; font-family: monospace; font-weight: 900; color: {diffColor(result.job1.stats.class_c, result.job2.stats.class_c)};">
+            <tr>
+              <td class="metric-cell">Class C</td>
+              <td class="num">{fmtNum(result.job1.stats.class_c)}</td>
+              <td class="num">{fmtNum(result.job2.stats.class_c)}</td>
+              <td class="num change" style="color:{diffColor(result.job1.stats.class_c, result.job2.stats.class_c)};">
                 {diffStr(result.job1.stats.class_c, result.job2.stats.class_c)}
               </td>
             </tr>
             <tr>
-              <td style="padding: 10px 16px; font-weight: 900; letter-spacing: 0.05em;">REVENUE</td>
-              <td style="padding: 10px 16px; text-align: right; font-family: monospace; font-weight: 700;">{fmt(result.job1.stats.revenue)}</td>
-              <td style="padding: 10px 16px; text-align: right; font-family: monospace; font-weight: 700;">{fmt(result.job2.stats.revenue)}</td>
-              <td style="padding: 10px 16px; text-align: right; font-family: monospace; font-weight: 900; color: {diffColor(result.job1.stats.revenue, result.job2.stats.revenue)};">
+              <td class="metric-cell">Revenue</td>
+              <td class="num">{fmt(result.job1.stats.revenue)}</td>
+              <td class="num">{fmt(result.job2.stats.revenue)}</td>
+              <td class="num change" style="color:{diffColor(result.job1.stats.revenue, result.job2.stats.revenue)};">
                 {diffRevStr(result.job1.stats.revenue, result.job2.stats.revenue)}
               </td>
             </tr>
@@ -343,61 +212,41 @@
 
     <!-- Movement detail table -->
     {#if result.movements.length > 0}
-      <div style="
-        border: 3px solid #383832; background: #feffd6;
-        box-shadow: 4px 4px 0 #383832; margin-bottom: 28px;
-      ">
-        <div style="
-          background: #383832; color: #feffd6; padding: 10px 16px;
-          font-weight: 900; font-size: 12px; letter-spacing: 0.1em;
-          display: flex; justify-content: space-between; align-items: center;
-        ">
-          <span>OUTLET MOVEMENT DETAILS</span>
-          <span style="font-size: 10px; color: #aaa; font-weight: 700;">
-            {result.movements.length} MOVEMENTS {result.movements.length >= 500 ? '(CAPPED AT 500)' : ''}
+      <div class="data-table-wrap">
+        <div class="data-table-head">
+          <span class="title">Outlet movement details</span>
+          <span class="meta">
+            {result.movements.length} movements {result.movements.length >= 500 ? '(capped at 500)' : ''}
           </span>
         </div>
-        <div style="overflow-x: auto; max-height: 500px; overflow-y: auto;">
-          <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+        <div class="table-scroll movement-scroll">
+          <table class="data-table">
             <thead>
-              <tr style="background: #383832; color: #feffd6; position: sticky; top: 0;">
-                <th style="padding: 8px 12px; text-align: left; font-weight: 900; font-size: 10px; letter-spacing: 0.08em; border-right: 1px solid #555;">CODE</th>
-                <th style="padding: 8px 12px; text-align: left; font-weight: 900; font-size: 10px; letter-spacing: 0.08em; border-right: 1px solid #555;">NAME</th>
-                <th style="padding: 8px 12px; text-align: left; font-weight: 900; font-size: 10px; letter-spacing: 0.08em; border-right: 1px solid #555;">BRANCH</th>
-                <th style="padding: 8px 12px; text-align: center; font-weight: 900; font-size: 10px; letter-spacing: 0.08em; border-right: 1px solid #555;">FROM</th>
-                <th style="padding: 8px 12px; text-align: center; font-weight: 900; font-size: 10px; letter-spacing: 0.08em; border-right: 1px solid #555;">TO</th>
-                <th style="padding: 8px 12px; text-align: center; font-weight: 900; font-size: 10px; letter-spacing: 0.08em;">STATUS</th>
+              <tr>
+                <th>Code</th>
+                <th>Name</th>
+                <th>Branch</th>
+                <th class="center-col">From</th>
+                <th class="center-col">To</th>
+                <th class="center-col">Status</th>
               </tr>
             </thead>
             <tbody>
-              {#each result.movements as m, i}
-                <tr style="border-bottom: 1px solid #e0e0c0; background: {i % 2 === 0 ? '#feffd6' : '#f8f8d0'};">
-                  <td style="padding: 8px 12px; font-family: monospace; font-weight: 700; font-size: 11px;">{m.code}</td>
-                  <td style="padding: 8px 12px; font-size: 11px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{m.name}</td>
-                  <td style="padding: 8px 12px; font-size: 11px;">{m.branch}</td>
-                  <td style="padding: 8px 12px; text-align: center;">
-                    <span style="
-                      display: inline-block; padding: 2px 8px;
-                      font-size: 10px; font-weight: 900; letter-spacing: 0.05em;
-                      border: 2px solid #383832; background: #e0e0c0;
-                    ">{m.from}</span>
+              {#each result.movements as m}
+                <tr>
+                  <td class="num">{m.code}</td>
+                  <td class="name-cell">{m.name}</td>
+                  <td>{m.branch}</td>
+                  <td class="center-col">
+                    <span class="badge badge-neutral">{m.from}</span>
                   </td>
-                  <td style="padding: 8px 12px; text-align: center;">
-                    <span style="
-                      display: inline-block; padding: 2px 8px;
-                      font-size: 10px; font-weight: 900; letter-spacing: 0.05em;
-                      border: 2px solid #383832; background: #e0e0c0;
-                    ">{m.to}</span>
+                  <td class="center-col">
+                    <span class="badge badge-neutral">{m.to}</span>
                   </td>
-                  <td style="padding: 8px 12px; text-align: center;">
-                    <span style="
-                      display: inline-block; padding: 3px 10px;
-                      font-size: 10px; font-weight: 900; letter-spacing: 0.08em;
-                      border: 2px solid #383832;
-                      background: {m.status === 'UPGRADED' ? '#007518' : '#be2d06'};
-                      color: white;
-                      box-shadow: 2px 2px 0 #383832;
-                    ">{m.status}</span>
+                  <td class="center-col">
+                    <span class="badge {m.status === 'UPGRADED' ? 'badge-a' : 'badge-c'}">
+                      {m.status === 'UPGRADED' ? 'Upgraded' : 'Downgraded'}
+                    </span>
                   </td>
                 </tr>
               {/each}
@@ -406,21 +255,120 @@
         </div>
       </div>
     {:else}
-      <div style="
-        border: 3px solid #383832; padding: 24px; background: #feffd6;
-        box-shadow: 4px 4px 0 #383832; text-align: center;
-        font-weight: 900; font-size: 13px; letter-spacing: 0.08em; color: #666;
-      ">
-        NO CLASSIFICATION MOVEMENTS DETECTED BETWEEN THESE JOBS
-      </div>
+      <div class="alert alert-info">No classification movements detected between these jobs.</div>
     {/if}
 
     <!-- Unchanged count -->
-    <div style="
-      text-align: center; margin-top: 16px;
-      font-size: 11px; font-weight: 700; color: #999; letter-spacing: 0.08em;
-    ">
-      {fmtNum(result.summary.unchanged)} OUTLETS UNCHANGED // {fmtNum(result.summary.total_changes)} TOTAL CHANGES
+    <div class="footnote">
+      {fmtNum(result.summary.unchanged)} outlets unchanged · {fmtNum(result.summary.total_changes)} total changes
     </div>
   {/if}
 </div>
+
+<style>
+  .page {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 24px;
+  }
+
+  .section-head h2 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .selector-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  .selector-grid .card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .selector-grid .badge {
+    align-self: flex-start;
+  }
+
+  .selector-grid .label {
+    margin: 0;
+  }
+
+  .compare-action {
+    display: flex;
+    justify-content: center;
+    margin: 8px 0 28px;
+  }
+
+  .compare-action .btn {
+    min-width: 220px;
+    justify-content: center;
+  }
+
+  .alert {
+    margin-bottom: 24px;
+  }
+
+  .grid-kpi {
+    margin-bottom: 24px;
+  }
+
+  .data-table-wrap {
+    margin-bottom: 24px;
+  }
+
+  .table-scroll {
+    overflow-x: auto;
+  }
+
+  .movement-scroll {
+    max-height: 500px;
+    overflow-y: auto;
+  }
+
+  .num-col,
+  .num {
+    text-align: right;
+  }
+
+  .center-col {
+    text-align: center;
+  }
+
+  .num {
+    font-family: var(--font-mono);
+  }
+
+  .change {
+    font-weight: 600;
+  }
+
+  .metric-cell {
+    font-weight: 600;
+  }
+
+  .name-cell {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .footnote {
+    text-align: center;
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-faint);
+  }
+
+  @media (max-width: 720px) {
+    .selector-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

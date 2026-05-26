@@ -1,0 +1,41 @@
+{
+  "pareto": {
+    "class_a_cutoff": 80,
+    "class_b_cutoff": 95
+  },
+  "wholesaler": {
+    "enabled": true,
+    "cartons_per_brand_month": 3,
+    "item_type": "Local"
+  },
+  "category_override": {
+    "enabled": true,
+    "contribution_cutoff": 80
+  },
+  "frequency": {
+    "class_a_tier": "F4",
+    "other_tier": "F2"
+  },
+  "workload": {
+    "yangon_min": 25,
+    "yangon_max": 30,
+    "regional_min": 30,
+    "regional_max": 35
+  },
+  "growth": {
+    "growing_pct": 10,
+    "declining_pct": 10
+  },
+  "risk": {
+    "freq_medium_days": 30,
+    "freq_high_days": 60,
+    "low_purchase_days": 5,
+    "signals_for_high": 3,
+    "signals_for_medium": 1
+  },
+  "ai": {
+    "llm_enabled": true,
+    "temperature": 0.3,
+    "enrich_top_n": 15
+  }
+}

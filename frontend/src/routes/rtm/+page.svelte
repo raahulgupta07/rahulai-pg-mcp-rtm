@@ -68,11 +68,11 @@
   }
 
   function fmtNum(n: number): string {
-    if (!n && n !== 0) return '$0';
-    if (Math.abs(n) >= 1e9) return `$${(n/1e9).toFixed(1)}B`;
-    if (Math.abs(n) >= 1e6) return `$${(n/1e6).toFixed(1)}M`;
-    if (Math.abs(n) >= 1e3) return `$${(n/1e3).toFixed(1)}K`;
-    return `$${n.toLocaleString()}`;
+    if (!n && n !== 0) return 'Ks 0';
+    if (Math.abs(n) >= 1e9) return `Ks ${(n/1e9).toFixed(1)}B`;
+    if (Math.abs(n) >= 1e6) return `Ks ${(n/1e6).toFixed(1)}M`;
+    if (Math.abs(n) >= 1e3) return `Ks ${(n/1e3).toFixed(1)}K`;
+    return `Ks ${n.toLocaleString()}`;
   }
 
   // Derived: unique branches from results
@@ -164,113 +164,198 @@
 </script>
 
 <svelte:head>
-  <title>RTM DATA — MCP AGENT</title>
+  <title>RTM Data — RTM Agent</title>
 </svelte:head>
 
-<!-- HERO BOX -->
-<div style="background:#383832;color:#feffd6;padding:16px 24px;margin-bottom:24px;border-bottom:4px solid #383832;border-right:4px solid #383832;">
-  <div style="font-size:1.5rem;font-weight:900;letter-spacing:-0.03em;">OUTLET DATA</div>
-  <div style="font-size:11px;opacity:0.75;margin-top:4px;">ALL CLASSIFIED OUTLETS — FILTER & EXPORT</div>
+<div class="page">
+  <!-- HEADER -->
+  <div class="section-head">
+    <span class="dot"></span>
+    <div>
+      <h2>Outlet Data</h2>
+      <div class="section-sub">All classified outlets — filter and export</div>
+    </div>
+  </div>
+
+  {#if loading}
+    <div class="card-flush">
+      <div class="data-table-head">
+        <span class="skeleton" style="height:16px;width:140px;"></span>
+      </div>
+      {#each [1,2,3,4,5] as _}
+        <div class="skeleton-row">
+          {#each [120,80,60,50,80,70] as w}
+            <span class="skeleton" style="height:14px;width:{w}px;"></span>
+          {/each}
+        </div>
+      {/each}
+    </div>
+
+  {:else if error}
+    <div class="alert alert-danger">{error}</div>
+
+  {:else if allResults.length === 0}
+    <div class="empty-state">
+      <div class="empty-title">No data available</div>
+      <div class="empty-sub">Run a classification first to generate outlet data.</div>
+      <a href="/" class="btn">Go to Classify</a>
+    </div>
+
+  {:else}
+    <!-- FILTER BAR -->
+    <div class="card filter-bar">
+      <div class="filter-row">
+        <!-- Job selector -->
+        <div class="filter-field job-field">
+          <label class="label" for="rtm-job">Job</label>
+          <select id="rtm-job" class="select" onchange={handleJobChange}>
+            {#each jobs as j}
+              <option value={j.job_id} selected={j.job_id === selectedJob}>{j.job_id} ({j.total_outlets} outlets)</option>
+            {/each}
+          </select>
+        </div>
+
+        <!-- Branch filter -->
+        <div class="filter-field branch-field">
+          <label class="label" for="rtm-branch">Branch</label>
+          <select id="rtm-branch" class="select" bind:value={selectedBranch}>
+            <option>All</option>
+            {#each branches as b}
+              <option>{b}</option>
+            {/each}
+          </select>
+        </div>
+
+        <!-- Class filter -->
+        <div class="filter-field class-field">
+          <label class="label" for="rtm-class">Class</label>
+          <select id="rtm-class" class="select" bind:value={selectedClass}>
+            <option>All</option>
+            {#each classes as c}
+              <option>{c}</option>
+            {/each}
+          </select>
+        </div>
+
+        <!-- Search -->
+        <div class="filter-field search-field">
+          <label class="label" for="rtm-search">Search</label>
+          <input id="rtm-search" type="text" class="input" bind:value={searchQuery} placeholder="Name, code, or branch…" />
+        </div>
+
+        <!-- Reset -->
+        <button class="btn-ghost reset-btn" onclick={resetFilters}>Reset</button>
+      </div>
+
+      <!-- Result count + export buttons -->
+      <div class="filter-footer">
+        <span class="chip chip-accent">
+          {filteredResults().length.toLocaleString()} of {allResults.length.toLocaleString()} results
+        </span>
+        <div class="export-actions">
+          {#if selectedJob}
+            <button class="btn btn-sm" onclick={() => exportExcel(selectedJob)}>Export Excel</button>
+          {/if}
+          <button class="btn-ghost btn-sm" onclick={exportCSV}>Export CSV</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- DATA TABLE -->
+    <DataTable title="RTM Data" data={tableData()} columns={columns} maxHeight="600px" />
+  {/if}
 </div>
 
-{#if loading}
-  <div style="margin-bottom:24px;">
-    <!-- Skeleton title bar -->
-    <div style="height:44px;background:#383832;margin-bottom:0;"></div>
-    <!-- Skeleton rows -->
-    {#each [1,2,3,4,5] as _}
-      <div style="display:flex;gap:12px;padding:12px 16px;border-bottom:1px solid #ebe8dd;background:white;">
-        {#each [120,80,60,50,80,70] as w}
-          <div style="height:14px;width:{w}px;background:#ebe8dd;animation:skeleton-pulse 1.5s ease-in-out infinite;"></div>
-        {/each}
-      </div>
-    {/each}
-  </div>
+<style>
+  .page {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 24px;
+  }
 
-{:else if error}
-  <div style="padding:16px;background:#be2d06;color:white;font-size:12px;font-weight:700;border:2px solid #383832;">ERROR: {error}</div>
+  .section-head h2 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
 
-{:else if allResults.length === 0}
-  <div style="text-align:center;padding:48px;">
-    <div style="font-size:14px;font-weight:900;color:#383832;margin-bottom:8px;">NO DATA AVAILABLE</div>
-    <div style="font-size:11px;color:#828179;">Run a classification first to generate outlet data.</div>
-    <a href="/" style="display:inline-block;margin-top:16px;padding:10px 24px;font-size:11px;font-weight:900;letter-spacing:0.1em;background:#00fc40;color:#383832;border:2px solid #383832;box-shadow:3px 3px 0 #383832;text-decoration:none;">GO TO CLASSIFY</a>
-  </div>
+  /* Filter bar */
+  .filter-bar {
+    margin-bottom: 20px;
+  }
 
-{:else}
-  <!-- FILTER BAR -->
-  <div style="background:white;border:3px solid #383832;box-shadow:4px 4px 0 #383832;padding:16px 20px;margin-bottom:20px;">
-    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+  .filter-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: flex-end;
+  }
 
-      <!-- Job selector -->
-      <div style="min-width:200px;">
-        <div style="font-size:9px;font-weight:900;letter-spacing:0.08em;color:#383832;margin-bottom:4px;display:inline-block;background:#383832;color:#feffd6;padding:1px 6px;">JOB</div>
-        <select onchange={handleJobChange} style="width:100%;padding:6px 10px;font-size:11px;font-weight:700;border:2px solid #383832;background:#f6f4e9;color:#383832;cursor:pointer;font-family:'Space Grotesk',sans-serif;">
-          {#each jobs as j}
-            <option value={j.job_id} selected={j.job_id === selectedJob}>{j.job_id} ({j.total_outlets} outlets)</option>
-          {/each}
-        </select>
-      </div>
+  .filter-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
 
-      <!-- Branch filter -->
-      <div style="min-width:150px;">
-        <div style="font-size:9px;font-weight:900;letter-spacing:0.08em;display:inline-block;background:#383832;color:#feffd6;padding:1px 6px;margin-bottom:4px;">BRANCH</div>
-        <select bind:value={selectedBranch} style="width:100%;padding:6px 10px;font-size:11px;font-weight:700;border:2px solid #383832;background:#f6f4e9;color:#383832;cursor:pointer;font-family:'Space Grotesk',sans-serif;">
-          <option>All</option>
-          {#each branches as b}
-            <option>{b}</option>
-          {/each}
-        </select>
-      </div>
+  .filter-field .label {
+    margin: 0;
+  }
 
-      <!-- Class filter -->
-      <div style="min-width:140px;">
-        <div style="font-size:9px;font-weight:900;letter-spacing:0.08em;display:inline-block;background:#383832;color:#feffd6;padding:1px 6px;margin-bottom:4px;">CLASS</div>
-        <select bind:value={selectedClass} style="width:100%;padding:6px 10px;font-size:11px;font-weight:700;border:2px solid #383832;background:#f6f4e9;color:#383832;cursor:pointer;font-family:'Space Grotesk',sans-serif;">
-          <option>All</option>
-          {#each classes as c}
-            <option>{c}</option>
-          {/each}
-        </select>
-      </div>
+  .job-field { min-width: 220px; }
+  .branch-field { min-width: 160px; }
+  .class-field { min-width: 150px; }
+  .search-field { flex: 1; min-width: 200px; }
 
-      <!-- Search -->
-      <div style="flex:1;min-width:180px;">
-        <div style="font-size:9px;font-weight:900;letter-spacing:0.08em;display:inline-block;background:#383832;color:#feffd6;padding:1px 6px;margin-bottom:4px;">SEARCH</div>
-        <input type="text" bind:value={searchQuery} placeholder="Name, code, or branch..."
-          style="width:100%;padding:6px 10px;font-size:11px;font-weight:700;border:2px solid #383832;background:#f6f4e9;color:#383832;font-family:'Space Grotesk',sans-serif;box-sizing:border-box;" />
-      </div>
+  .reset-btn {
+    height: 38px;
+  }
 
-      <!-- Reset -->
-      <button onclick={resetFilters}
-        style="padding:6px 14px;font-size:10px;font-weight:900;letter-spacing:0.08em;background:#383832;color:#feffd6;border:2px solid #383832;cursor:pointer;box-shadow:2px 2px 0 #383832;font-family:'Space Grotesk',sans-serif;"
-        onmousedown={(e) => { e.currentTarget.style.transform='translate(1px,1px)'; e.currentTarget.style.boxShadow='1px 1px 0 #383832'; }}
-        onmouseup={(e) => { e.currentTarget.style.transform='translate(0,0)'; e.currentTarget.style.boxShadow='2px 2px 0 #383832'; }}
-      >RESET</button>
-    </div>
+  .filter-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
 
-    <!-- Result count + export buttons -->
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding-top:12px;border-top:1px solid #ebe8dd;">
-      <span style="font-size:10px;font-weight:900;letter-spacing:0.06em;display:inline-block;background:#383832;color:#feffd6;padding:2px 8px;">
-        {filteredResults().length.toLocaleString()} OF {allResults.length.toLocaleString()} RESULTS
-      </span>
-      <div style="display:flex;gap:6px;">
-        {#if selectedJob}
-          <button onclick={() => exportExcel(selectedJob)}
-            style="padding:6px 14px;font-size:10px;font-weight:900;letter-spacing:0.08em;background:#00fc40;color:#383832;border:2px solid #383832;cursor:pointer;box-shadow:2px 2px 0 #383832;font-family:'Space Grotesk',sans-serif;"
-            onmousedown={(e) => { e.currentTarget.style.transform='translate(1px,1px)'; e.currentTarget.style.boxShadow='1px 1px 0 #383832'; }}
-            onmouseup={(e) => { e.currentTarget.style.transform='translate(0,0)'; e.currentTarget.style.boxShadow='2px 2px 0 #383832'; }}
-          >EXPORT EXCEL</button>
-        {/if}
-        <button onclick={exportCSV}
-          style="padding:6px 14px;font-size:10px;font-weight:900;letter-spacing:0.08em;background:#007518;color:white;border:2px solid #383832;cursor:pointer;box-shadow:2px 2px 0 #383832;font-family:'Space Grotesk',sans-serif;"
-          onmousedown={(e) => { e.currentTarget.style.transform='translate(1px,1px)'; e.currentTarget.style.boxShadow='1px 1px 0 #383832'; }}
-          onmouseup={(e) => { e.currentTarget.style.transform='translate(0,0)'; e.currentTarget.style.boxShadow='2px 2px 0 #383832'; }}
-        >EXPORT CSV</button>
-      </div>
-    </div>
-  </div>
+  .export-actions {
+    display: flex;
+    gap: 8px;
+  }
 
-  <!-- DATA TABLE -->
-  <DataTable title="RTM DATA" data={tableData()} columns={columns} maxHeight="600px" />
-{/if}
+  /* Empty state */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    text-align: center;
+    padding: 56px 24px;
+  }
+
+  .empty-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .empty-sub {
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
+  .empty-state .btn {
+    margin-top: 12px;
+  }
+
+  /* Loading skeleton */
+  .skeleton-row {
+    display: flex;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+</style>
