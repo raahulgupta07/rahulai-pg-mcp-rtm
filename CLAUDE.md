@@ -98,7 +98,10 @@ PG-MCP-RTM/
 | POST | `/api/auth/change-password` | Yes — own password (verifies old) |
 | GET/POST | `/api/preferences` | Yes — per-user appearance |
 | POST | `/api/upload` · DELETE `/api/upload/{id}` | Yes — stages file to disk first |
-| POST | `/api/classify?upload_id=X` | Yes — reads staged file, runs pipeline |
+| POST | `/api/classify?upload_id=X` | Yes — **sync** (back-compat). Blocks for full run. |
+| POST | `/api/classify-async?upload_id=X` | Yes — **async**. Returns `{job_id}` instantly. Reserves job, schedules pipeline as `asyncio.create_task`. LB-timeout safe. |
+| GET | `/api/jobs/{id}/status` | Yes — lightweight poller. Returns `{status, step/total, message, log[], ready, error}`. |
+| GET | `/api/jobs/{id}/result` | Yes — returns saved full payload when status=completed. |
 | GET | `/api/f4-analysis?job_id=X` | Yes — F4 deep-dive: health, top-10, churn-risk, per-branch |
 | GET | `/api/jobs` · `/api/jobs/{id}` | Yes — own + shared; admin+ sees all |
 | GET | `/api/jobs/{id}/export` · `/comparison` | Yes |

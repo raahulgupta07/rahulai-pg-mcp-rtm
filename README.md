@@ -10,7 +10,7 @@ Built for P&G Myanmar market data — 11,000+ outlets, 9 branches.
 - **Outlet Lifecycle Cohorts** — every outlet stamped New / Active / Reactivated / Dormant / Lost from DocDate
 - **Configurable Rule Engine** — every threshold, the F4 rule, category overrides,
   AI behaviour — all tuned from the UI (`/rules`), versioned with one-click rollback
-- **2-Stage Upload** — file lands on app disk first (XHR with live % progress, up to 2 GB), DB write only after classification completes
+- **2-Stage Upload + Async Classification** — file lands on app disk first (XHR with live % progress, up to 2 GB), then `POST /api/classify-async` returns instantly with `job_id`. Frontend polls `/api/jobs/{id}/status` every 2s — survives any LB timeout (no more 504 from nginx/ALB). Live progress: `step/10`, message, log lines streamed to terminal UI
 - **CSV Preview** — client-side parse of first 8 MB on file pick: row/branch/outlet counts, sample table, column-match chips (required/optional), branch distribution bars
 - **Parallel AI Pipeline** — 3 macro insight calls + chunked per-outlet enrichment run concurrently (asyncio.gather + Semaphore), ~3-4x faster than serial
 - **AI Enrichment** — growth signal, risk level, visit priority, per-outlet actions + LLM insights (chunked, top-N)

@@ -70,6 +70,24 @@ export async function classify(uploadId: string, thresholdA: number = 80, thresh
   return fetchJSON<ClassifyResponse>(`/classify?${params}`, { method: 'POST' });
 }
 
+// Async classify — kicks off background job, returns job_id immediately
+export async function classifyAsync(uploadId: string, thresholdA: number = 80, thresholdB: number = 95): Promise<{job_id: string, status: string, status_url: string, result_url: string}> {
+  const params = new URLSearchParams({
+    upload_id: uploadId,
+    threshold_a: String(thresholdA),
+    threshold_b: String(thresholdB),
+  });
+  return fetchJSON(`/classify-async?${params}`, { method: 'POST' });
+}
+
+export async function getJobStatus(jobId: string): Promise<{job_id: string, status: string, step: number, total: number, message: string, log: string[], ready: boolean, error: string | null}> {
+  return fetchJSON(`/jobs/${jobId}/status`);
+}
+
+export async function getJobResult(jobId: string): Promise<ClassifyResponse> {
+  return fetchJSON<ClassifyResponse>(`/jobs/${jobId}/result`);
+}
+
 export async function getJobs(): Promise<Job[]> {
   return fetchJSON<Job[]>('/jobs');
 }

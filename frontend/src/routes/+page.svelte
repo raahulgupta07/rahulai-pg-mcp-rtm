@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { classify, exportExcel, getJob, getJobComparison, getSettings, uploadFile, deleteUpload, getF4Analysis } from '$lib/api';
+  import { classify, classifyAsync, getJobStatus, getJobResult, exportExcel, getJob, getJobComparison, getSettings, uploadFile, deleteUpload, getF4Analysis } from '$lib/api';
   import { page } from '$app/stores';
   import KpiCard from '$lib/components/KpiCard.svelte';
   import DataTable from '$lib/components/DataTable.svelte';
@@ -485,7 +485,27 @@
     const typeInterval = 0; // unused, kept for clearInterval compat
 
     try {
-      data = await classify(uploaded.upload_id, thresholdA, thresholdB);
+      // Kick off async background job — returns instantly
+      const { job_id } = await classifyAsync(uploaded.upload_id, thresholdA, thresholdB);
+      // Poll status every 2s until ready (no LB timeout issue)
+      let lastLogLen = 0;
+      while (true) {
+        await new Promise(r => setTimeout(r, 2000));
+        const st = await getJobStatus(job_id);
+        // Append any new log lines from backend to terminal
+        if (st.log && st.log.length > lastLogLen) {
+          const newLines = st.log.slice(lastLogLen);
+          terminalLines = [...terminalLines, ...newLines];
+          lastLogLen = st.log.length;
+          scrollTerminal();
+        }
+        currentStep = st.step || currentStep;
+        if (st.status === 'failed' || st.error) {
+          throw new Error(st.error || st.message || 'Classification failed');
+        }
+        if (st.ready) break;
+      }
+      data = await getJobResult(job_id);
       clearInterval(stepInterval);
       clearInterval(typeInterval);
       comparison = data.comparison ?? null;

@@ -322,21 +322,43 @@ async def delete_upload(upload_id: str, user: dict = Depends(require_auth)):
     return {"ok": True}
 
 
-# POST /api/classify
+# Internal: shared pipeline used by both sync /api/classify and async
+# /api/classify-async. If job_id_override is supplied, the existing job
+# row is used (caller already reserved it). If db_progress=True, progress
+# updates are written to jobs.progress_step/total/message/log as we go,
+# so the async status endpoint can poll live state.
 # ──────────────────────────────────────────────
-@app.post("/api/classify")
-async def classify(
-    upload_id: str = Query(None, description="Use prior /api/upload result"),
-    file: UploadFile = File(None),
-    threshold_a: int = Query(80, ge=50, le=95),
-    threshold_b: int = Query(95, ge=55, le=99),
-    user: dict = Depends(require_auth),
-):
-    """
-    Upload a CSV file and run the full RTM classification pipeline.
-    Returns all data needed for the frontend in one response.
-    """
+async def _run_classify_pipeline(
+    upload_id: str | None,
+    file: UploadFile | None,
+    threshold_a: int,
+    threshold_b: int,
+    user: dict,
+    job_id_override: str | None = None,
+    db_progress: bool = False,
+) -> dict:
     log: list[str] = []
+    db_singleton = get_database() if db_progress else None
+    current_step = {"n": 0}
+    total_steps = 10
+
+    def report(step: int | None = None, msg: str | None = None, log_line: str | None = None):
+        if log_line is not None:
+            log.append(log_line)
+        if not db_progress or db_singleton is None or job_id_override is None:
+            return
+        if step is not None:
+            current_step["n"] = step
+        try:
+            db_singleton.update_job_progress(
+                job_id_override,
+                step=current_step["n"],
+                total=total_steps,
+                message=msg,
+                log_append=log_line,
+            )
+        except Exception:
+            pass  # never let progress write kill the pipeline
 
     # 1. Resolve input — either staged upload (preferred) or legacy direct file
     upload_path: Path | None = None
@@ -399,19 +421,24 @@ async def classify(
             log.append(f"[WARN] {w}")
     log.append("[OK] Schema validation passed")
 
-    # 2. Start a job
+    # 2. Start a job (reuse pre-reserved id if caller supplied one)
     job_manager = get_job_manager()
-    job_id = job_manager.start_job(
-        sales_filename=source_name,
-        customer_filename="",
-        item_filename="",
-        threshold_a=threshold_a,
-        threshold_b=threshold_b,
-    )
+    if job_id_override:
+        job_id = job_id_override
+    else:
+        job_id = job_manager.start_job(
+            sales_filename=source_name,
+            customer_filename="",
+            item_filename="",
+            threshold_a=threshold_a,
+            threshold_b=threshold_b,
+        )
     log.append(f"[INFO] Job ID: {job_id[:8]}...")
+    report(step=1, msg="Validating + parsing CSV", log_line=None)
 
     try:
         # 3. Run classification pipeline (with the active rule config)
+        report(step=2, msg="Running Pareto classification per branch")
         rule_cfg = load_rule_config()
         log.append("$ rtm-agent classify --method pareto --partition branch")
         log.append(f"[INFO] Rule config: Pareto {rule_cfg['pareto']['class_a_cutoff']}/{rule_cfg['pareto']['class_b_cutoff']}, "
@@ -436,6 +463,7 @@ async def classify(
         #   - per-outlet enrichment splits top-N into chunks, fired in parallel
         #     (gated by ai.max_concurrent semaphore)
         #   - both batches gathered together so total elapsed ≈ max() not sum()
+        report(step=4, msg="AI enrichment + insights (parallel + chunked)")
         import time as _time
         ai_t0 = _time.time()
         log.append("$ rtm-agent enrich --parallel --chunked")
@@ -464,6 +492,7 @@ async def classify(
         branch_summary = df_to_records(branch_summary_df) if branch_summary_df is not None else []
 
         # 7. Save to database via job manager
+        report(step=7, msg="Persisting job + results to database")
         date_from = str(classifier.min_date.date()) if classifier.min_date else None
         date_to = str(classifier.max_date.date()) if classifier.max_date else None
         wl_df = classifier.route_workload if hasattr(classifier, 'route_workload') else None
@@ -627,10 +656,11 @@ async def classify(
         db.save_job_insights(job_id, insights, data_quality)
 
         # 10. Build response
+        report(step=10, msg="Building response payload")
         results_records = df_to_records(results_df)
         comparison = await run_in_threadpool(compute_run_comparison, job_id)
 
-        return JSONResponse(content={
+        return {
             "job_id": job_id,
             "total_outlets": len(results_df),
             "branches": branches,
@@ -658,12 +688,15 @@ async def classify(
             "data_quality_ok": good_checks,
             "comparison": comparison,
             "llm_usage": llm_usage,
-        })
+        }
 
     except HTTPException:
         raise
     except Exception as e:
-        job_manager.fail_job(job_id, str(e))
+        try:
+            job_manager.fail_job(job_id, str(e))
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=f"Classification failed: {str(e)}")
     finally:
         # Clean up staged upload after processing (success or failure)
@@ -672,6 +705,111 @@ async def classify(
                 upload_path.unlink()
             except Exception:
                 pass
+
+
+# POST /api/classify — sync wrapper (back-compat). Blocks for full run.
+@app.post("/api/classify")
+async def classify(
+    upload_id: str = Query(None, description="Use prior /api/upload result"),
+    file: UploadFile = File(None),
+    threshold_a: int = Query(80, ge=50, le=95),
+    threshold_b: int = Query(95, ge=55, le=99),
+    user: dict = Depends(require_auth),
+):
+    result = await _run_classify_pipeline(upload_id, file, threshold_a, threshold_b, user)
+    return JSONResponse(content=result)
+
+
+# POST /api/classify-async — returns instantly. Production-safe behind any LB.
+@app.post("/api/classify-async")
+async def classify_async(
+    upload_id: str = Query(None),
+    threshold_a: int = Query(80, ge=50, le=95),
+    threshold_b: int = Query(95, ge=55, le=99),
+    user: dict = Depends(require_auth),
+):
+    if not upload_id:
+        raise HTTPException(status_code=400, detail="upload_id required for async classify")
+    if not _find_upload(upload_id):
+        raise HTTPException(status_code=404, detail=f"upload_id {upload_id} not found")
+
+    job_manager = get_job_manager()
+    job_id = job_manager.start_job(
+        sales_filename=upload_id,
+        customer_filename="",
+        item_filename="",
+        threshold_a=threshold_a,
+        threshold_b=threshold_b,
+    )
+    get_database().update_job_progress(job_id, step=0, total=10,
+                                       message="queued",
+                                       log_append="$ rtm-agent classify --async (queued)")
+
+    async def _bg():
+        try:
+            payload = await _run_classify_pipeline(
+                upload_id=upload_id, file=None,
+                threshold_a=threshold_a, threshold_b=threshold_b,
+                user=user, job_id_override=job_id, db_progress=True,
+            )
+            get_database().save_job_result_payload(job_id, json.dumps(payload, default=str))
+            get_database().update_job_progress(job_id, step=10, total=10,
+                                               message="done",
+                                               log_append="[OK] ✓ Classification complete")
+        except HTTPException as he:
+            try:
+                get_job_manager().fail_job(job_id, str(he.detail))
+                get_database().update_job_progress(job_id, message=f"failed: {he.detail}",
+                                                   log_append=f"[ERROR] {he.detail}")
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                get_job_manager().fail_job(job_id, str(e))
+                get_database().update_job_progress(job_id, message=f"failed: {e}",
+                                                   log_append=f"[ERROR] {e}")
+            except Exception:
+                pass
+
+    asyncio.create_task(_bg())
+    return JSONResponse(content={
+        "job_id": job_id,
+        "status": "queued",
+        "status_url": f"/api/jobs/{job_id}/status",
+        "result_url": f"/api/jobs/{job_id}/result",
+    })
+
+
+# GET /api/jobs/{id}/status — poller endpoint
+@app.get("/api/jobs/{job_id}/status")
+async def job_status(job_id: str, user: dict = Depends(require_auth)):
+    prog = get_database().get_job_progress(job_id)
+    if not prog:
+        raise HTTPException(status_code=404, detail="job not found")
+    status = prog.get("status", "unknown")
+    log_lines = (prog.get("progress_log") or "").splitlines()
+    return JSONResponse(content={
+        "job_id": job_id,
+        "status": status,
+        "step": prog.get("progress_step") or 0,
+        "total": prog.get("progress_total") or 10,
+        "message": prog.get("progress_message") or "",
+        "log": log_lines[-200:],
+        "ready": bool(prog.get("has_payload")) and status == "completed",
+        "error": prog.get("error_message"),
+    })
+
+
+# GET /api/jobs/{id}/result — fetch saved full response payload
+@app.get("/api/jobs/{job_id}/result")
+async def job_result(job_id: str, user: dict = Depends(require_auth)):
+    payload = get_database().get_job_result_payload(job_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="result not ready or job not found")
+    try:
+        return JSONResponse(content=json.loads(payload))
+    except Exception:
+        raise HTTPException(status_code=500, detail="stored payload corrupt")
 
 
 # ──────────────────────────────────────────────

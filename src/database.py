@@ -154,6 +154,11 @@ class RTMDatabase:
                 "llm_prompt_tokens INTEGER DEFAULT 0",
                 "llm_completion_tokens INTEGER DEFAULT 0",
                 "llm_cost DOUBLE PRECISION DEFAULT 0",
+                "progress_step INTEGER DEFAULT 0",
+                "progress_total INTEGER DEFAULT 10",
+                "progress_message TEXT",
+                "progress_log TEXT",
+                "result_payload TEXT",
             ):
                 cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col_def}")
             for col_def in (
@@ -241,6 +246,48 @@ class RTMDatabase:
                  item_file, threshold_a, threshold_b),
             )
         return True
+
+    def save_job_result_payload(self, job_id: str, payload: str) -> None:
+        """Persist the full classification response JSON so async-launched jobs
+        can be fetched back by frontend polling after completion."""
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE jobs SET result_payload=%s WHERE job_id=%s", (payload, job_id))
+            conn.commit()
+
+    def get_job_progress(self, job_id: str) -> dict:
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT status, progress_step, progress_total, progress_message, "
+                "progress_log, error_message, result_payload IS NOT NULL AS has_payload "
+                "FROM jobs WHERE job_id=%s", (job_id,))
+            row = cur.fetchone()
+            return dict(row) if row else {}
+
+    def get_job_result_payload(self, job_id: str) -> Optional[str]:
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT result_payload FROM jobs WHERE job_id=%s", (job_id,))
+            row = cur.fetchone()
+            return (row.get("result_payload") if row else None)
+
+    def update_job_progress(self, job_id, step=None, total=None, message=None, log_append: str = None) -> None:
+        """Persist incremental progress so async polling can read live state."""
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            sets, params = [], []
+            if step is not None:
+                sets.append('progress_step=%s'); params.append(int(step))
+            if total is not None:
+                sets.append('progress_total=%s'); params.append(int(total))
+            if message is not None:
+                sets.append('progress_message=%s'); params.append(str(message)[:500])
+            if log_append:
+                # append a line to progress_log (cap at ~256KB to avoid runaway growth)
+                sets.append("progress_log=LEFT(COALESCE(progress_log,'') || %s || E'\\n', 262144)")
+                params.append(str(log_append))
+            if not sets:
+                return
+            params.append(job_id)
+            cur.execute(f"UPDATE jobs SET {', '.join(sets)} WHERE job_id=%s", params)
+            conn.commit()
 
     def update_job_status(self, job_id, status, error_message=None) -> bool:
         with self.pool.connection() as conn, conn.cursor() as cur:
