@@ -17,7 +17,7 @@ services:
   mcp-agent:
     build: .
     ports:
-      - "8011:8001"
+      - "${RTM_HOST_PORT:-8011}:8001"
     volumes:
       - ./data:/app/data
       - ./outputs:/app/outputs

@@ -4,14 +4,15 @@
   import { auth } from '$lib/stores/auth.svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { appearance, initAppearance, loadServerPrefs, modeLabel } from '$lib/theme';
-  import Appearance from '$lib/components/Appearance.svelte';
   import ChangePassword from '$lib/components/ChangePassword.svelte';
+  import ActivityPanel from '$lib/components/ActivityPanel.svelte';
+  import { getActivity } from '$lib/api';
 
   let { children } = $props();
 
-  let apOpen = $state(false);
   let pwOpen = $state(false);
+  let actOpen = $state(false);
+  let actUnread = $state(0);
 
   const currentPath = $derived($page.url.pathname);
   const isLoginRoute = $derived(currentPath === '/login');
@@ -27,6 +28,7 @@
     { label: 'Docs',     href: '/docs',     icon: 'menu_book' },
     { label: 'Rules',     href: '/rules',     icon: 'tune',       perm: 'rules' },
     { label: 'Analytics', href: '/analytics', icon: 'monitoring', perm: 'analytics' },
+    { label: 'Cockpit',   href: '/cockpit',   icon: 'dashboard',  superOnly: true },
     { label: 'Settings',  href: '/users',     icon: 'settings',   superOnly: true },
   ];
 
@@ -53,6 +55,11 @@
     fetch('/api/health').then(r => r.json()).then(d => health = d).catch(() => {});
   }
 
+  function pollActivity() {
+    if (!auth.isAuthenticated) return;
+    getActivity().then(a => actUnread = a.unread).catch(() => {});
+  }
+
   function timeAgo(s: string | null): string {
     if (!s) return '—';
     const mins = Math.floor((Date.now() - new Date(s).getTime()) / 60000);
@@ -64,23 +71,14 @@
   }
 
   onMount(() => {
-    initAppearance();
     pollHealth();
-    const iv = setInterval(pollHealth, 30000);
+    pollActivity();
+    const iv = setInterval(() => { pollHealth(); pollActivity(); }, 30000);
     return () => clearInterval(iv);
   });
 
   $effect(() => {
     if (!auth.isAuthenticated && currentPath !== '/login') goto('/login');
-  });
-
-  // Pull per-user appearance once the user is signed in
-  let prefsLoaded = false;
-  $effect(() => {
-    if (auth.isAuthenticated && !prefsLoaded) {
-      prefsLoaded = true;
-      loadServerPrefs();
-    }
   });
 </script>
 
@@ -127,6 +125,19 @@
           <div class="user-name">{auth.user?.display_name || auth.user?.username}</div>
           <div class="user-role">{auth.user?.role}</div>
         </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Main column ── -->
+  <div class="app-main">
+    <!-- Desktop top bar (right-aligned actions) -->
+    <header class="desktop-topbar">
+      <div class="dt-actions">
+        <button class="icon-btn bell" onclick={() => actOpen = true} title="Activity & updates" aria-label="Activity and updates">
+          <span class="material-symbols-outlined">notifications</span>
+          {#if actUnread > 0}<span class="bell-badge">{actUnread > 9 ? '9+' : actUnread}</span>{/if}
+        </button>
         <button class="icon-btn" onclick={() => pwOpen = true} title="Change password" aria-label="Change password">
           <span class="material-symbols-outlined">key</span>
         </button>
@@ -134,18 +145,8 @@
           <span class="material-symbols-outlined">logout</span>
         </button>
       </div>
+    </header>
 
-      <!-- Appearance -->
-      <button class="theme-toggle" onclick={() => apOpen = true} title="Appearance settings">
-        <span class="material-symbols-outlined">palette</span>
-        <span class="tt-label">Appearance</span>
-        <span class="tt-value">{modeLabel($appearance.mode)}</span>
-      </button>
-    </div>
-  </aside>
-
-  <!-- ── Main column ── -->
-  <div class="app-main">
     <!-- Mobile header -->
     <header class="mobile-header">
       <div class="sidebar-brand">
@@ -153,8 +154,9 @@
         <span class="brand-text">Agent</span>
       </div>
       <div class="mob-actions">
-        <button class="icon-btn" onclick={() => apOpen = true} aria-label="Appearance">
-          <span class="material-symbols-outlined">palette</span>
+        <button class="icon-btn bell" onclick={() => actOpen = true} aria-label="Activity and updates">
+          <span class="material-symbols-outlined">notifications</span>
+          {#if actUnread > 0}<span class="bell-badge">{actUnread > 9 ? '9+' : actUnread}</span>{/if}
         </button>
         <button class="icon-btn" onclick={() => pwOpen = true} aria-label="Change password">
           <span class="material-symbols-outlined">key</span>
@@ -181,8 +183,8 @@
   </div>
 </div>
 
-<Appearance open={apOpen} onclose={() => apOpen = false} />
 <ChangePassword open={pwOpen} onclose={() => pwOpen = false} />
+<ActivityPanel open={actOpen} onclose={() => actOpen = false} onseen={(n) => actUnread = n} />
 {/if}
 
 <style>
@@ -249,6 +251,10 @@
   }
   .mob-actions { display: flex; gap: 6px; }
 
+  /* Desktop top bar — right-aligned actions (hidden on mobile; mobile-header covers it) */
+  .desktop-topbar { display: none; }
+  .dt-actions { display: flex; gap: 8px; }
+
   .icon-btn {
     display: inline-flex;
     align-items: center;
@@ -263,6 +269,13 @@
   }
   .icon-btn:hover { background: var(--surface-2); color: var(--text); }
   .icon-btn .material-symbols-outlined { font-size: 19px; }
+  .bell { position: relative; }
+  .bell-badge {
+    position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px;
+    padding: 0 4px; border-radius: var(--r-pill); background: var(--accent); color: #fff;
+    font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+    border: 2px solid var(--sidebar-bg);
+  }
 
   /* ── Bottom nav (mobile) ── */
   .nav-bottom {
@@ -295,6 +308,14 @@
   /* ── Desktop layout ── */
   @media (min-width: 768px) {
     .mobile-header, .nav-bottom { display: none; }
+    .desktop-topbar {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      padding: 12px 36px;
+      border-bottom: 1px solid var(--border-soft);
+      background: var(--bg);
+    }
 
     .sidebar {
       display: flex;
@@ -401,22 +422,4 @@
   .user-role { font-size: 11px; color: var(--text-faint); text-transform: capitalize; }
 
   /* ── Theme toggle ── */
-  .theme-toggle {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    width: 100%;
-    padding: 8px 11px;
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: var(--r-md);
-    color: var(--text-muted);
-    font-size: 13px;
-    font-weight: 500;
-    transition: background-color 0.15s, color 0.15s;
-  }
-  .theme-toggle:hover { background: var(--surface-2); color: var(--text); }
-  .theme-toggle .material-symbols-outlined { font-size: 18px; }
-  .tt-label { flex: 1; text-align: left; }
-  .tt-value { font-size: 12px; color: var(--text); opacity: 0.75; }
 </style>

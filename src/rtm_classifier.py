@@ -228,6 +228,17 @@ class RTMClassifier:
                     )
                     df[f"{item_type}_Sales_{period}"] = df[f"{item_type}_Sales_{period}"].fillna(0)
 
+        # Momentum: recent half-period vs the run-rate of the longer period.
+        # 6M vs (12M/2) and 3M vs (6M/2) → % delta. Guard div-by-zero → 0.
+        if "TotalSales_12M" in df.columns and "TotalSales_6M" in df.columns:
+            base = df["TotalSales_12M"] / 2
+            df["Growth_6M_vs_12M"] = np.where(
+                base > 0, (df["TotalSales_6M"] - base) / base * 100, 0.0)
+        if "TotalSales_6M" in df.columns and "TotalSales_3M" in df.columns:
+            base = df["TotalSales_6M"] / 2
+            df["Growth_3M_vs_6M"] = np.where(
+                base > 0, (df["TotalSales_3M"] - base) / base * 100, 0.0)
+
     def calculate_averages(self, df):
         """Calculate average sales for each period"""
 

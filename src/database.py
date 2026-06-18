@@ -53,6 +53,7 @@ JOB_RESULTS_COLUMNS = [
     ("Import_Contribution_Pct", "DOUBLE PRECISION DEFAULT 0"),
     ("Is_Wholesaler", "INTEGER DEFAULT 0"),
     ("Base_Classification", "TEXT"), ("Classification", "TEXT"),
+    ("Visit_Frequency", "TEXT"),
     ("CumulativeSales", "DOUBLE PRECISION DEFAULT 0"),
     ("CumulativePct", "DOUBLE PRECISION DEFAULT 0"),
     ("PurchaseDays_2Yr", "INTEGER DEFAULT 0"),
@@ -77,6 +78,13 @@ JOB_RESULTS_COLUMNS = [
     ("Principal", "TEXT"),
     ("Route_SalesGroup", "TEXT"),
     ("Ref", "TEXT"),
+    # AI enrichment — generated per-outlet, persisted so History re-export
+    # and the RTM Data page keep the fields after the live response is gone.
+    ("AI_Growth_Signal", "TEXT"),
+    ("AI_Risk_Level", "TEXT"),
+    ("AI_Action", "TEXT"),
+    ("AI_Visit_Priority", "INTEGER"),
+    ("AI_Insight", "TEXT"),
 ]
 
 
@@ -142,7 +150,8 @@ class RTMDatabase:
                     rule_version INTEGER,
                     llm_prompt_tokens INTEGER DEFAULT 0,
                     llm_completion_tokens INTEGER DEFAULT 0,
-                    llm_cost DOUBLE PRECISION DEFAULT 0
+                    llm_cost DOUBLE PRECISION DEFAULT 0,
+                    llm_model TEXT
                 )
             """)
 
@@ -166,6 +175,7 @@ class RTMDatabase:
                 "progress_message TEXT",
                 "progress_log TEXT",
                 "result_payload TEXT",
+                "llm_model TEXT",
             ):
                 cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col_def}")
             for col_def in (
@@ -183,6 +193,12 @@ class RTMDatabase:
                 '"Principal" TEXT',
                 '"Route_SalesGroup" TEXT',
                 '"Ref" TEXT',
+                '"Visit_Frequency" TEXT',
+                '"AI_Growth_Signal" TEXT',
+                '"AI_Risk_Level" TEXT',
+                '"AI_Action" TEXT',
+                '"AI_Visit_Priority" INTEGER',
+                '"AI_Insight" TEXT',
             ):
                 cur.execute(f"ALTER TABLE job_results ADD COLUMN IF NOT EXISTS {col_def}")
 
@@ -382,12 +398,14 @@ class RTMDatabase:
             cur.execute("UPDATE jobs SET result_path=%s WHERE job_id=%s", (path, job_id))
         return True
 
-    def save_job_usage(self, job_id: str, prompt_tokens: int, completion_tokens: int, cost: float) -> bool:
-        """Store the LLM token usage + real cost for a job."""
+    def save_job_usage(self, job_id: str, prompt_tokens: int, completion_tokens: int,
+                       cost: float, model: str = None) -> bool:
+        """Store the LLM token usage + real cost (+ model) for a job."""
         with self.pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
-                "UPDATE jobs SET llm_prompt_tokens=%s, llm_completion_tokens=%s, llm_cost=%s WHERE job_id=%s",
-                (int(prompt_tokens), int(completion_tokens), float(cost), job_id),
+                "UPDATE jobs SET llm_prompt_tokens=%s, llm_completion_tokens=%s, "
+                "llm_cost=%s, llm_model=%s WHERE job_id=%s",
+                (int(prompt_tokens), int(completion_tokens), float(cost), model, job_id),
             )
         return True
 

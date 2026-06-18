@@ -33,6 +33,7 @@ import numpy as np
 
 import uuid
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "/app/uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -42,6 +43,8 @@ from src.database import get_database
 from src.job_manager import get_job_manager
 from src.ai_service import get_ai_service, summarize_usage
 from backend.auth import authenticate_user, create_token, get_current_user, verify_token, list_users, create_user, delete_user, update_user_password, change_password, get_user_prefs, set_user_prefs, load_ldap_config, save_ldap_config, ldap_test, update_user_identity, set_user_disabled, list_groups, create_group, update_group, delete_group, set_user_groups, effective_permissions, PERMISSION_CATALOG
+from backend.version import APP_VERSION, get_changelog
+from backend.auth import login_failure_reason
 
 # Disable auto API docs (Swagger/ReDoc/OpenAPI) — backend not browsable by users.
 # The frontend's own /docs page is served via the SPA fallback below.
@@ -125,7 +128,8 @@ async def login(body: dict):
     password = body.get("password", "")
     user = authenticate_user(username, password)
     if not user:
-        get_database().log_action(username or "(blank)", "LOGIN_FAILED", "Invalid credentials or disabled account")
+        reason = login_failure_reason(username)
+        get_database().log_action(username or "(blank)", "LOGIN_FAILED", f"reason:{reason}")
         raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
     token = create_token(user)
     db = get_database()
@@ -173,6 +177,252 @@ async def save_preferences(body: dict, user: dict = Depends(require_auth)):
     """Persist the current user's UI preferences (theme/appearance)."""
     set_user_prefs(user["user_id"], body)
     return {"ok": True}
+
+# ──────────────────────────────────────────────
+# Activity feed + version (notifications bell + "What's new" panel).
+# Activity is DERIVED live from jobs + audit_log — no new table.
+# Unread = events newer than the user's prefs["activity_seen_at"].
+# ──────────────────────────────────────────────
+def _build_activity(limit: int = 40) -> list:
+    db = get_database()
+    events: list = []
+    try:
+        for j in db.get_all_jobs(limit):
+            st = str(j.get("status") or "").lower()
+            ts = j.get("completed_at") or j.get("created_at")
+            jid = j.get("job_id")
+            if st == "completed":
+                events.append({
+                    "id": f"job-{jid}", "type": "jobs", "level": "ok",
+                    "title": f"Classification complete · {jid}",
+                    "subtitle": f"{int(j.get('total_outlets') or 0):,} outlets · "
+                                f"{int(j.get('class_a_count') or 0):,} Class A",
+                    "ts": ts,
+                })
+            elif st == "failed":
+                events.append({
+                    "id": f"job-{jid}", "type": "alerts", "level": "error",
+                    "title": f"Classification failed · {jid}",
+                    "subtitle": (j.get("error_message") or "Run failed")[:120],
+                    "ts": ts,
+                })
+    except Exception:
+        pass
+    try:
+        for a in db.get_audit_log(limit):
+            action = str(a.get("action") or "")
+            au = action.upper()
+            if au == "CLASSIFY":
+                continue  # job events already cover completed runs
+            if "RULE" in au or "ROLLBACK" in au:
+                etype, level = "rules", "ok"
+            elif au == "LOGIN_FAILED":
+                etype, level = "alerts", "warn"
+            else:
+                etype, level = "system", "ok"
+            events.append({
+                "id": f"audit-{a.get('id') or a.get('timestamp')}",
+                "type": etype, "level": level,
+                "title": f"{action.replace('_', ' ').title()} · {a.get('username') or 'system'}",
+                "subtitle": (a.get("details") or "")[:120],
+                "ts": a.get("timestamp"),
+            })
+    except Exception:
+        pass
+    # ISO timestamps sort lexicographically; newest first
+    events.sort(key=lambda e: e.get("ts") or "", reverse=True)
+    return events[:limit]
+
+
+@app.get("/api/activity")
+async def get_activity(user: dict = Depends(require_auth)):
+    """Recent platform activity + this user's unread count."""
+    events = _build_activity()
+    seen_at = (get_user_prefs(user["user_id"]) or {}).get("activity_seen_at") or ""
+    unread = sum(1 for e in events if (e.get("ts") or "") > seen_at)
+    return {"events": events, "unread": unread, "seen_at": seen_at}
+
+
+@app.post("/api/activity/seen")
+async def mark_activity_seen(user: dict = Depends(require_auth)):
+    """Mark all activity read for this user (stamps prefs.activity_seen_at)."""
+    prefs = get_user_prefs(user["user_id"]) or {}
+    prefs["activity_seen_at"] = datetime.now().isoformat()
+    set_user_prefs(user["user_id"], prefs)
+    return {"ok": True, "seen_at": prefs["activity_seen_at"]}
+
+
+@app.get("/api/version")
+async def get_version(user: dict = Depends(require_auth)):
+    """Current app version + changelog for the 'What's new' panel."""
+    releases = get_changelog()
+    latest = releases[0]["version"] if releases else APP_VERSION
+    return {
+        "version": APP_VERSION,
+        "latest": latest,
+        "up_to_date": APP_VERSION == latest,
+        "releases": releases,
+    }
+
+
+# ──────────────────────────────────────────────
+# Ops Cockpit — super-admin observability. One endpoint aggregates
+# jobs + audit_log + users into KPIs, pulse feed, cost/tokens, models,
+# per-user, and auth/security. All derived live (no extra tables).
+# ──────────────────────────────────────────────
+def _parse_ts(s):
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", ""))
+    except Exception:
+        return None
+
+
+def _fmt_dur(secs):
+    if secs is None:
+        return "—"
+    secs = int(secs)
+    if secs < 60:
+        return f"{secs}s"
+    return f"{secs // 60}m {secs % 60:02d}s"
+
+
+def _build_cockpit(days: int = 7) -> dict:
+    db = get_database()
+    now = datetime.now()
+    cutoff = now - timedelta(days=days)
+
+    all_jobs = db.get_all_jobs(500)
+    jobs = [j for j in all_jobs if (_parse_ts(j.get("created_at")) or now) >= cutoff]
+    audit = [a for a in db.get_audit_log(1500) if (_parse_ts(a.get("timestamp")) or now) >= cutoff]
+    try:
+        users = list_users()
+    except Exception:
+        users = []
+
+    # ── per-job derived ──
+    jrows, by_user, by_model = [], {}, {}
+    tok_in = tok_out = cost = outlets = 0
+    durations, completed, failed = [], 0, 0
+    for j in jobs:
+        st = str(j.get("status") or "").lower()
+        pin = int(j.get("llm_prompt_tokens") or 0)
+        pout = int(j.get("llm_completion_tokens") or 0)
+        c = float(j.get("llm_cost") or 0)
+        model = j.get("llm_model") or "unknown"
+        run_by = j.get("run_by") or "—"
+        st0, st1 = _parse_ts(j.get("created_at")), _parse_ts(j.get("completed_at"))
+        dur = (st1 - st0).total_seconds() if st0 and st1 and st1 >= st0 else None
+        tok_in += pin; tok_out += pout; cost += c
+        outlets += int(j.get("total_outlets") or 0)
+        if st == "completed":
+            completed += 1
+            if dur is not None:
+                durations.append(dur)
+        elif st == "failed":
+            failed += 1
+        jrows.append({
+            "job_id": j.get("job_id"), "run_by": run_by, "model": model,
+            "outlets": int(j.get("total_outlets") or 0), "tokens": pin + pout,
+            "cost": round(c, 4), "duration": _fmt_dur(dur),
+            "rule_version": j.get("rule_version"), "status": st or "pending",
+        })
+        u = by_user.setdefault(run_by, {"username": run_by, "jobs": 0, "tokens": 0, "cost": 0.0})
+        u["jobs"] += 1; u["tokens"] += pin + pout; u["cost"] += c
+        m = by_model.setdefault(model, {"model": model, "runs": 0, "tokens": 0, "cost": 0.0})
+        m["runs"] += 1; m["tokens"] += pin + pout; m["cost"] += c
+
+    njobs = len(jobs)
+    success_rate = round(100 * completed / njobs, 1) if njobs else 0.0
+    avg_runtime = int(sum(durations) / len(durations)) if durations else 0
+
+    # ── audit-derived: auth + pulse ──
+    role_of = {u.get("username"): u.get("role") for u in users}
+    last_active, logins_ok, logins_fail = {}, 0, 0
+    failed_by_reason = {"bad_password": 0, "unknown_user": 0, "disabled": 0, "other": 0}
+    active = set()
+    pulse = []
+    for a in audit:
+        action = str(a.get("action") or "")
+        au, who, det, ts = action.upper(), a.get("username") or "system", a.get("details") or "", a.get("timestamp")
+        if a.get("username"):
+            active.add(a["username"])
+            if ts and ts > last_active.get(a["username"], ""):
+                last_active[a["username"]] = ts
+        if au == "LOGIN":
+            logins_ok += 1
+            pulse.append({"level": "ok", "title": f"Login · {who}", "meta": "signed in", "ts": ts})
+        elif au == "LOGIN_FAILED":
+            logins_fail += 1
+            reason = det.split("reason:", 1)[1].strip() if "reason:" in det else "other"
+            failed_by_reason[reason] = failed_by_reason.get(reason, 0) + 1
+            pulse.append({"level": "error", "title": f"Login failed · {reason.replace('_', ' ')}",
+                          "meta": who, "ts": ts})
+        elif au == "EXPORT":
+            pulse.append({"level": "info", "title": f"Export · {who}", "meta": det or "report downloaded", "ts": ts})
+        elif "RULE" in au or "ROLLBACK" in au:
+            pulse.append({"level": "warn", "title": f"{action.replace('_', ' ').title()} · {who}", "meta": det, "ts": ts})
+        elif au not in ("CLASSIFY",):
+            pulse.append({"level": "info", "title": f"{action.replace('_', ' ').title()} · {who}", "meta": det, "ts": ts})
+
+    for j in jobs:
+        st = str(j.get("status") or "").lower()
+        if st == "completed":
+            pulse.append({"level": "ok", "title": f"Classification complete · {j.get('job_id')}",
+                          "meta": f"{j.get('run_by') or '—'} · {j.get('llm_model') or 'unknown'} · "
+                                  f"{int(j.get('total_outlets') or 0):,} outlets · ${float(j.get('llm_cost') or 0):.2f}",
+                          "ts": j.get("completed_at") or j.get("created_at")})
+        elif st == "failed":
+            pulse.append({"level": "error", "title": f"Classification failed · {j.get('job_id')}",
+                          "meta": f"{j.get('run_by') or '—'} · {(j.get('error_message') or 'run failed')[:100]}",
+                          "ts": j.get("completed_at") or j.get("created_at")})
+    pulse.sort(key=lambda e: e.get("ts") or "", reverse=True)
+
+    for un, u in by_user.items():
+        u["role"] = role_of.get(un, "—")
+        u["last_active"] = last_active.get(un)
+        u["cost"] = round(u["cost"], 4)
+
+    ldap_users = sum(1 for u in users if u.get("home_server") or u.get("auth_source") == "ldap")
+
+    # ── cost trend: per-day for the window ──
+    trend = {}
+    for j in jobs:
+        d = (_parse_ts(j.get("created_at")) or now).date().isoformat()
+        t = trend.setdefault(d, {"day": d, "cost": 0.0, "tokens": 0})
+        t["cost"] += float(j.get("llm_cost") or 0)
+        t["tokens"] += int(j.get("llm_prompt_tokens") or 0) + int(j.get("llm_completion_tokens") or 0)
+    cost_trend = [trend[k] for k in sorted(trend)]
+
+    return {
+        "range_days": days,
+        "kpis": {
+            "jobs": njobs, "success_rate": success_rate, "completed": completed, "failed": failed,
+            "tokens_in": tok_in, "tokens_out": tok_out, "tokens": tok_in + tok_out,
+            "cost": round(cost, 4), "cost_avg": round(cost / completed, 4) if completed else 0.0,
+            "active_users": len(active), "total_users": len(users),
+            "failed_logins": logins_fail, "failed_by_reason": failed_by_reason,
+            "avg_runtime_s": avg_runtime, "outlets": outlets,
+        },
+        "pulse": pulse[:25],
+        "tokens": {"prompt": tok_in, "completion": tok_out},
+        "cost_trend": cost_trend,
+        "models": sorted(by_model.values(), key=lambda m: -m["cost"]),
+        "jobs": jrows[:12],
+        "users": sorted(by_user.values(), key=lambda u: -u["cost"]),
+        "auth": {
+            "logins_success": logins_ok, "logins_failed": logins_fail,
+            "failed_by_reason": failed_by_reason,
+            "ldap_users": ldap_users, "local_users": len(users) - ldap_users,
+        },
+    }
+
+
+@app.get("/api/cockpit")
+async def get_cockpit(days: int = Query(7, ge=1, le=90), user: dict = Depends(require_super_admin)):
+    """Full ops cockpit aggregate — super-admin only."""
+    return await run_in_threadpool(_build_cockpit, days)
 
 @app.get("/api/users")
 async def get_users(user: dict = Depends(require_super_admin)):
@@ -391,28 +641,41 @@ async def _run_classify_pipeline(
     # Wrap pd.read_csv in run_in_threadpool — 257 MB read takes ~15s and
     # would otherwise block the event loop (no other coro can run, no log
     # flush, polling backs up).
-    report(step=1, msg="Parsing CSV from disk")
-    log.append("$ rtm-agent upload --parse-csv")
+    is_excel = source_name.lower().endswith((".xlsx", ".xls"))
+    report(step=1, msg=f"Parsing {'Excel' if is_excel else 'CSV'} from disk")
+    log.append(f"$ rtm-agent upload --parse-{'excel' if is_excel else 'csv'}")
     sales_df = None
-    for encoding in ("utf-8", "latin-1", "cp1252"):
-        try:
-            if upload_path:
-                sales_df = await run_in_threadpool(
-                    pd.read_csv, upload_path, encoding=encoding, low_memory=False)
-            else:
-                raw_bytes = await file.read()
-                sales_df = await run_in_threadpool(
-                    pd.read_csv, io.BytesIO(raw_bytes), encoding=encoding, low_memory=False)
-            log.append(f"[OK] CSV parsed ({encoding}): {len(sales_df):,} rows, {len(sales_df.columns)} columns")
-            break
-        except (UnicodeDecodeError, pd.errors.ParserError):
-            continue
 
-    if sales_df is None:
-        # cleanup staged file on parse failure
-        if upload_path and upload_path.exists():
-            upload_path.unlink()
-        raise HTTPException(status_code=400, detail="Could not parse CSV with any supported encoding (utf-8, latin-1, cp1252)")
+    # Resolve the bytes source once — staged file on disk, or legacy in-memory upload.
+    raw_bytes = None if upload_path else await file.read()
+
+    if is_excel:
+        # Excel (.xlsx/.xls) — openpyxl reads the first sheet. No encoding loop:
+        # the workbook is binary, not text.
+        try:
+            src = upload_path if upload_path else io.BytesIO(raw_bytes)
+            sales_df = await run_in_threadpool(pd.read_excel, src, engine="openpyxl")
+            log.append(f"[OK] Excel parsed: {len(sales_df):,} rows, {len(sales_df.columns)} columns")
+        except Exception as e:
+            if upload_path and upload_path.exists():
+                upload_path.unlink()
+            raise HTTPException(status_code=400, detail=f"Could not parse Excel file: {e}")
+    else:
+        for encoding in ("utf-8", "latin-1", "cp1252"):
+            try:
+                src = upload_path if upload_path else io.BytesIO(raw_bytes)
+                sales_df = await run_in_threadpool(
+                    pd.read_csv, src, encoding=encoding, low_memory=False)
+                log.append(f"[OK] CSV parsed ({encoding}): {len(sales_df):,} rows, {len(sales_df.columns)} columns")
+                break
+            except (UnicodeDecodeError, pd.errors.ParserError):
+                continue
+
+        if sales_df is None:
+            # cleanup staged file on parse failure
+            if upload_path and upload_path.exists():
+                upload_path.unlink()
+            raise HTTPException(status_code=400, detail="Could not parse CSV with any supported encoding (utf-8, latin-1, cp1252)")
 
     # Validate required columns
     log.append("$ rtm-agent validate --check-schema")
@@ -525,7 +788,8 @@ async def _run_classify_pipeline(
         # LLM token usage + real OpenRouter cost for this run
         llm_usage = summarize_usage(usage_sink)
         get_database().save_job_usage(job_id, llm_usage["prompt_tokens"],
-                                      llm_usage["completion_tokens"], llm_usage["cost"])
+                                      llm_usage["completion_tokens"], llm_usage["cost"],
+                                      model=getattr(ai_service, "model", None))
         log.append(f"[COST] LLM: {llm_usage['total_tokens']:,} tokens across "
                    f"{llm_usage['calls']} calls — ${llm_usage['cost']:.4f}")
         log.append("[OK] Job saved to database")

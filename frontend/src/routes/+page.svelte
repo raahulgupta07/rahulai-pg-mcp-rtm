@@ -44,10 +44,68 @@
     return out.map(s => s.trim());
   }
 
+  // Compute preview stats from parsed rows (header row + data rows as arrays).
+  // Shared by both the CSV and Excel parse paths so the preview is identical.
+  function finalizePreview(headers: string[], dataRows: string[][], scale: number, sampled: boolean) {
+    const idx = (name: string) => headers.indexOf(name);
+    const iBranch = idx('BranchName');
+    const iCode = idx('Cus.Code');
+    const iDate = idx('DocDate');
+
+    const branchMap = new Map<string, number>();
+    const outletSet = new Set<string>();
+    let minDate = '', maxDate = '';
+    for (const row of dataRows) {
+      if (iBranch >= 0) {
+        const b = row[iBranch] || '(none)';
+        branchMap.set(b, (branchMap.get(b) || 0) + 1);
+      }
+      if (iCode >= 0 && iBranch >= 0) outletSet.add(`${row[iBranch]}|${row[iCode]}`);
+      if (iDate >= 0 && row[iDate]) {
+        const d = String(row[iDate]);
+        if (!minDate || d < minDate) minDate = d;
+        if (!maxDate || d > maxDate) maxDate = d;
+      }
+    }
+
+    const branches = [...branchMap.entries()]
+      .map(([name, count]) => ({ name, count: Math.round(count * scale) }))
+      .sort((a, b) => b.count - a.count);
+
+    preview = {
+      headers,
+      rows: dataRows.slice(0, 10),
+      totalRows: Math.round(dataRows.length * scale),
+      branches,
+      outletCount: Math.round(outletSet.size * scale),
+      dateRange: minDate && maxDate ? (minDate === maxDate ? minDate : `${minDate} → ${maxDate}`) : '—',
+      requiredMissing: REQUIRED_COLS.filter(c => !headers.includes(c)),
+      optionalPresent: OPTIONAL_COLS.filter(c => headers.includes(c)),
+      sampled,
+    };
+  }
+
   async function buildPreview(f: File) {
     preview = null;
+    const isExcel = /\.xlsx?$/i.test(f.name);
     try {
-      // Slice first 8 MB to keep parse fast on huge files
+      if (isExcel) {
+        // SheetJS parses the binary workbook. Loaded on demand to keep the
+        // initial bundle light — only pulled in when an Excel file is picked.
+        const XLSX = await import('xlsx');
+        const buf = await f.arrayBuffer();
+        const wb = XLSX.read(buf, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        // header:1 → array-of-arrays; defval keeps blank cells aligned.
+        const grid = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, defval: '', raw: false });
+        if (grid.length < 2) return;
+        const headers = (grid[0] as any[]).map(c => String(c ?? '').trim());
+        const dataRows = (grid.slice(1) as any[][]).map(r => r.map(c => String(c ?? '')));
+        finalizePreview(headers, dataRows, 1, false);
+        return;
+      }
+
+      // CSV path — slice first 8 MB to keep parse fast on huge files
       const SLICE = 8 * 1024 * 1024;
       const isSliced = f.size > SLICE;
       const blob = isSliced ? f.slice(0, SLICE) : f;
@@ -70,51 +128,15 @@
       const lines = isSliced ? allLines.slice(0, -1).filter(l => l.length > 0) : allLines.filter(l => l.length > 0);
       if (lines.length < 2) return;
       const headers = parseCsvLine(lines[0]);
-      const dataLines = lines.slice(1);
-      const sample = dataLines.slice(0, 10).map(parseCsvLine);
-
-      const idx = (name: string) => headers.indexOf(name);
-      const iBranch = idx('BranchName');
-      const iCode = idx('Cus.Code');
-      const iDate = idx('DocDate');
-
-      const branchMap = new Map<string, number>();
-      const outletSet = new Set<string>();
-      let minDate = '', maxDate = '';
-      for (const line of dataLines) {
-        const row = parseCsvLine(line);
-        if (iBranch >= 0) {
-          const b = row[iBranch] || '(none)';
-          branchMap.set(b, (branchMap.get(b) || 0) + 1);
-        }
-        if (iCode >= 0 && iBranch >= 0) outletSet.add(`${row[iBranch]}|${row[iCode]}`);
-        if (iDate >= 0 && row[iDate]) {
-          const d = row[iDate];
-          if (!minDate || d < minDate) minDate = d;
-          if (!maxDate || d > maxDate) maxDate = d;
-        }
-      }
-
+      const dataRows = lines.slice(1).map(parseCsvLine);
       // Estimate total rows from full file size if sliced
       const scale = isSliced ? f.size / SLICE : 1;
-      const branches = [...branchMap.entries()]
-        .map(([name, count]) => ({ name, count: Math.round(count * scale) }))
-        .sort((a, b) => b.count - a.count);
-
-      preview = {
-        headers,
-        rows: sample,
-        totalRows: Math.round(dataLines.length * scale),
-        branches,
-        outletCount: Math.round(outletSet.size * scale),
-        dateRange: minDate && maxDate ? (minDate === maxDate ? minDate : `${minDate} → ${maxDate}`) : '—',
-        requiredMissing: REQUIRED_COLS.filter(c => !headers.includes(c)),
-        optionalPresent: OPTIONAL_COLS.filter(c => headers.includes(c)),
-        sampled: isSliced,
-      };
+      finalizePreview(headers, dataRows, scale, isSliced);
     } catch (e) {
       console.warn('preview parse failed', e);
-      fileError = 'Could not parse CSV preview — file may be corrupted or wrong encoding';
+      fileError = isExcel
+        ? 'Could not parse Excel preview — file may be corrupted or not a valid .xlsx'
+        : 'Could not parse CSV preview — file may be corrupted or wrong encoding';
     }
   }
   let thresholdA = $state(80);
@@ -489,9 +511,9 @@
     const selected = input.files?.[0] ?? null;
     fileError = '';
     if (!selected) { file = null; return; }
-    // Validate: must be .csv
-    if (!selected.name.toLowerCase().endsWith('.csv')) {
-      fileError = 'Invalid file type — only .csv files accepted';
+    // Validate: must be .csv, .xlsx or .xls
+    if (!/\.(csv|xlsx|xls)$/i.test(selected.name)) {
+      fileError = 'Invalid file type — only .csv, .xlsx and .xls files accepted';
       file = null;
       input.value = '';
       return;
@@ -665,25 +687,23 @@
       });
   });
 
-  function exportFilteredCSV() {
-    const rows = filteredResults;
+  // Full-dataset CSV — all rows, all columns (union of keys across rows),
+  // RFC-4180 escaping. Mirrors the Excel "All Results" sheet in flat form.
+  function exportFullCSV() {
+    const rows = data?.results ?? [];
     if (!rows.length) return;
-    // Build CSV with key columns, formatted
-    const headers = ['Cus.Code', 'Cus.Name', 'BranchName', 'Classification', 'TotalSales_2Yr', 'TotalSales_12M', 'TotalSales_6M', 'TotalSales_3M', 'TransactionCount', 'Overall_Contribution_Pct', 'AI_Growth_Signal', 'AI_Risk_Level', 'AI_Visit_Priority', 'AI_Action'];
-    const csvRows = [headers.join(',')];
-    for (const r of rows) {
-      const vals = headers.map(h => {
-        const v = r[h] ?? r[h.replace('.', '_')] ?? '';
-        return typeof v === 'string' && (v.includes(',') || v.includes('"')) ? `"${v.replace(/"/g, '""')}"` : v;
-      });
-      csvRows.push(vals.join(','));
-    }
-    const csv = csvRows.join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
+    const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];
+    const esc = (v: any) => {
+      if (v === null || v === undefined) return '';
+      const s = String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const csv = [cols.join(','), ...rows.map(r => cols.map(c => esc(r[c])).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `RTM_${data?.job_id || 'filtered'}_${selectedBranch.replace(/\s/g, '_')}.csv`;
+    a.download = `RTM_${data?.job_id ?? 'export'}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -798,7 +818,7 @@
     <!-- Hidden file input -->
     <input
       type="file"
-      accept=".csv"
+      accept=".csv,.xlsx,.xls"
       id="fileInput"
       onchange={handleFileChange}
       style="display:none;"
@@ -820,9 +840,9 @@
           onclick={() => document.getElementById('fileInput')?.click()}
         >
           <div class="drop-icon">↑</div>
-          <div class="drop-title">Upload Sales CSV</div>
+          <div class="drop-title">Upload Sales Data</div>
           <div class="drop-sub">Click to browse or drag &amp; drop your file</div>
-          <div class="drop-hint">Only .csv files accepted</div>
+          <div class="drop-hint">CSV or Excel (.csv, .xlsx, .xls)</div>
         </div>
       {:else}
         <!-- File selected state -->
@@ -831,7 +851,7 @@
             <div class="file-check">✓</div>
             <div>
               <div class="file-name">{file.name}</div>
-              <div class="file-meta">{file.size > 1024 * 1024 ? (file.size / 1024 / 1024).toFixed(1) + ' MB' : (file.size / 1024).toFixed(0) + ' KB'} · CSV file</div>
+              <div class="file-meta">{file.size > 1024 * 1024 ? (file.size / 1024 / 1024).toFixed(1) + ' MB' : (file.size / 1024).toFixed(0) + ' KB'} · {file.name.toLowerCase().endsWith('.csv') ? 'CSV file' : 'Excel file'}</div>
             </div>
           </div>
           <button
@@ -1923,21 +1943,25 @@
 
   <!-- ---- TAB 6: EXPORT ---- -->
   {:else if activeTab === 6}
-    <ChapterHeading title="Export Results" subtitle="Download classified data" />
+    <ChapterHeading title="Export Results" subtitle="Download the complete classified dataset" />
     <div class="export-grid">
-      <!-- Excel export -->
+      <!-- Excel — full multi-sheet report -->
       <div class="card card-flush">
         <div class="card-head">
           <div class="card-head-title">Excel Export (.xlsx)</div>
         </div>
         <div class="card-body">
-          <div class="export-desc">Multi-sheet workbook with:</div>
+          <div class="export-desc">
+            One workbook — every outlet, every field. The <strong>All Results</strong> sheet
+            is the full dataset; the rest are ready-made views:
+          </div>
           <ul class="export-list">
-            <li>All Outlets (classified)</li>
-            <li>Branch Summary</li>
-            <li>Class A / B / C sheets</li>
-            <li>AI Insights</li>
-            <li>Pipeline Log</li>
+            <li>All Results — every outlet × every column (incl. AI enrichment)</li>
+            <li>Overall + Branch Summary</li>
+            <li>Per-branch sheets + Top 50</li>
+            <li>AI Action Plan</li>
+            <li>Run Comparison vs previous run</li>
+            <li>Run Info — who ran it, rule version, LLM cost</li>
           </ul>
           <button class="btn btn-block" onclick={() => exportExcel(data.job_id)}>
             Download Excel
@@ -1945,47 +1969,22 @@
         </div>
       </div>
 
-      <!-- Filtered export card -->
-      <div class="card">
-        <div class="export-card-title">Export Filtered Data</div>
-        <div class="export-desc">
-          Downloads only the currently visible results ({filteredResults.length.toLocaleString()} outlets)
-          {#if selectedBranch !== 'All Branches'} — filtered by {selectedBranch}{/if}
-        </div>
-        <button class="btn" onclick={exportFilteredCSV}>
-          Export Filtered CSV ({filteredResults.length.toLocaleString()} rows)
-        </button>
-      </div>
-
-      <!-- CSV export -->
+      <!-- CSV — flat full dataset, all rows + all columns -->
       <div class="card card-flush">
         <div class="card-head">
           <div class="card-head-title">CSV Export (.csv)</div>
         </div>
         <div class="card-body">
-          <div class="export-desc">Flat file export with all columns:</div>
+          <div class="export-desc">
+            Flat single file — same data as the Excel <strong>All Results</strong> sheet:
+            every outlet, every column. For import into other tools.
+          </div>
           <ul class="export-list">
-            <li>All classification fields</li>
-            <li>Sales aggregates (2Yr/12M/6M/3M)</li>
-            <li>AI enrichment columns</li>
-            <li>Contribution percentages</li>
+            <li>All outlets ({(data?.results?.length ?? 0).toLocaleString()} rows)</li>
+            <li>Every column — classification, sales, contributions, AI</li>
+            <li>No formatting / no extra sheets</li>
           </ul>
-          <button
-            class="btn btn-block"
-            onclick={() => {
-              if (!data) return;
-              const header = explorerCols.join(',');
-              const rows = data.results.map(r => explorerCols.map(c => JSON.stringify(r[c] ?? '')).join(','));
-              const csv = [header, ...rows].join('\n');
-              const blob = new Blob([csv], { type: 'text/csv' });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = `RTM_${data.job_id}.csv`;
-              a.click();
-              URL.revokeObjectURL(url);
-            }}
-          >
+          <button class="btn btn-block" onclick={exportFullCSV}>
             Download CSV
           </button>
         </div>
@@ -3020,6 +3019,9 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: 16px;
+  }
+  .export-single {
+    max-width: 520px;
   }
   .export-card-title {
     font-size: 0.85rem;

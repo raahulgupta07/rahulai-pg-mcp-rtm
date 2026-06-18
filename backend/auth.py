@@ -543,6 +543,18 @@ def _provision_ldap_user(ldap_user: dict, server_id: str = "", merge_by_email: b
     return {"id": rec["id"], "username": rec["username"], "role": rec["role"], "display_name": rec["display_name"]}
 
 
+def login_failure_reason(username: str) -> str:
+    """Best-effort reason for a failed login — for the cockpit security panel.
+    unknown_user (no local record) · disabled · bad_password."""
+    rec = next((u for u in _load_users()
+                if str(u.get("username", "")).lower() == str(username or "").lower()), None)
+    if not rec:
+        return "unknown_user"
+    if rec.get("disabled"):
+        return "disabled"
+    return "bad_password"
+
+
 def get_user_prefs(user_id: int) -> dict:
     """Return per-user UI preferences (theme/appearance)."""
     users = _load_users()

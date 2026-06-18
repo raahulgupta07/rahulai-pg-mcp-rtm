@@ -304,3 +304,32 @@ export async function testLdap(cfg: any): Promise<any> {
     body: JSON.stringify(cfg),
   });
 }
+
+// ── Activity feed + version (notifications bell + What's new) ──
+export interface ActivityEvent {
+  id: string;
+  type: 'jobs' | 'rules' | 'alerts' | 'system';
+  level: 'ok' | 'warn' | 'error';
+  title: string;
+  subtitle: string;
+  ts: string;
+}
+export interface ActivityResponse { events: ActivityEvent[]; unread: number; seen_at: string; }
+
+export async function getActivity(): Promise<ActivityResponse> {
+  return fetchJSON('/activity');
+}
+export async function markActivitySeen(): Promise<{ ok: boolean; seen_at: string }> {
+  return fetchJSON('/activity/seen', { method: 'POST' });
+}
+
+export interface Release { version: string; date: string; title: string; body: string; }
+export interface VersionResponse { version: string; latest: string; up_to_date: boolean; releases: Release[]; }
+export async function getVersion(): Promise<VersionResponse> {
+  return fetchJSON('/version');
+}
+
+// ── Ops Cockpit (super-admin observability) ──
+export async function getCockpit(days = 7): Promise<any> {
+  return fetchJSON(`/cockpit?days=${days}`);
+}

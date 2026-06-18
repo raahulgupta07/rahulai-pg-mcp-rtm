@@ -10,10 +10,11 @@ Built for P&G Myanmar market data — 11,000+ outlets, 9 branches.
 - **Outlet Lifecycle Cohorts** — every outlet stamped New / Active / Reactivated / Dormant / Lost from DocDate
 - **Configurable Rule Engine** — every threshold, the F4 rule, category overrides,
   AI behaviour — all tuned from the UI (`/rules`), versioned with one-click rollback
+- **CSV + Excel Upload** — accepts `.csv`, `.xlsx` and `.xls`. Backend parses on extension (`pd.read_excel` for workbooks, encoding-loop `pd.read_csv` otherwise)
 - **2-Stage Upload + Async Classification** — file lands on app disk first (XHR with live % progress, up to 2 GB), then `POST /api/classify-async` returns instantly with `job_id`. Frontend polls `/api/jobs/{id}/status` every 2s — survives any LB timeout (no more 504 from nginx/ALB). Live progress: `step/10`, message, log lines streamed to terminal UI
-- **CSV Preview** — client-side parse of first 8 MB on file pick: row/branch/outlet counts, sample table, column-match chips (required/optional), branch distribution bars
+- **File Preview** — on file pick: CSV parsed from first 8 MB; Excel parsed in full via SheetJS (lazy-loaded). Row/branch/outlet counts, sample table, column-match chips (required/optional), branch distribution bars
 - **Parallel AI Pipeline** — 3 macro insight calls + chunked per-outlet enrichment run concurrently (asyncio.gather + Semaphore), ~3-4x faster than serial
-- **AI Enrichment** — growth signal, risk level, visit priority, per-outlet actions + LLM insights (chunked, top-N)
+- **AI Enrichment** — growth signal, risk level, visit priority, per-outlet actions + LLM insights (chunked, top-N). All AI fields + momentum (`Growth_6M_vs_12M`, `Growth_3M_vs_6M`) **persisted to `job_results`** so History re-export and the RTM Data page keep them
 - **LLM Cost Tracking** — real OpenRouter token + USD cost captured per job
 - **Run Comparison** — every run compared to the previous: class counts, revenue, channels,
   branches, outlet movement — on screen and in Excel
@@ -74,6 +75,9 @@ Separate Postgres + app containers. Easier to scale or upgrade independently.
 ```bash
 docker compose up -d --build
 # → http://localhost:8011
+
+# Host port configurable (e.g. 8011 already taken):
+RTM_HOST_PORT=8042 docker compose up -d --build   # → http://localhost:8042
 ```
 
 ### Option 3 — Local dev
@@ -118,7 +122,7 @@ effective access = role base ∪ groups. Groups can map to LDAP groups for auto-
 
 ## Input File
 
-Single CSV. Required columns:
+Single **CSV (`.csv`) or Excel (`.xlsx`/`.xls`)** file. Required columns:
 
 | Column | Description |
 |--------|-------------|
@@ -167,7 +171,7 @@ Defaults — all configurable on the **Rules** page, version-tracked with rollba
 
 ## Design System
 
-**Claude.ai-style, flat** (zero border-radius). CSS variables only — no hardcoded colors.
+**Claude.ai-style** with soft rounded corners (radius tokens `--r-*`). CSS variables only — no hardcoded colors.
 
 | Token | Light | Dark |
 |-------|-------|------|
@@ -175,7 +179,11 @@ Defaults — all configurable on the **Rules** page, version-tracked with rollba
 | `--accent` | `#C96442` terracotta | `#E89070` |
 | `--text` | `#2C2B26` | `#EDEAE0` |
 | Font | Inter (system fallback) | same |
-| Radius | `0` everywhere | same |
+| Radius | soft — `6/8/12/16px` (`--r-*` tokens), pill `999px` | same |
+
+**Icons:** Material Symbols are **self-hosted** (`frontend/static/fonts/material-symbols-outlined.ttf`,
+`@font-face` + class in `app.css`) — no Google Fonts CDN dependency, so icons render on
+offline / proxied networks.
 
 **Components:** `KpiCard`, `DataTable`, `Badge` (A/B/C/F4 solid + soft), `ChapterHeading`, `Appearance` modal (6 palettes + density + accent picker), `ChangePassword` modal.
 
@@ -223,6 +231,7 @@ JWT_SECRET_KEY=change-in-production
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=admin123
 ADMIN_DISPLAY_NAME=Administrator
+RTM_HOST_PORT=8011               # host port for docker-compose (→ container 8001)
 ```
 
 ## Data Persistence

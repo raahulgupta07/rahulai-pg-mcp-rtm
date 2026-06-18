@@ -1,0 +1,14 @@
+[
+  {
+    "version": "1.1.0",
+    "date": "2026-06-18",
+    "title": "Excel upload, persisted AI fields, Claude-style UI",
+    "body": "Upload Excel (.xlsx/.xls) as well as CSV. AI enrichment and growth fields now persist to the database, so History re-export and the RTM Data page keep them. Icons are self-hosted (work offline). Export is now one Excel report plus a full-dataset CSV. The whole UI moved to a softer, rounded Claude.ai style across every page."
+  },
+  {
+    "version": "1.0.0",
+    "date": "2026-06-15",
+    "title": "Initial release",
+    "body": "Pareto 80/15/5 classification per branch, F4 distributor as first-class, outlet lifecycle cohorts, parallel AI insights with cost tracking, 8-tab analytics, roles + groups + permissions, LDAP/Active Directory, and job sharing."
+  }
+]

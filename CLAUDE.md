@@ -13,6 +13,7 @@
 ```bash
 # Docker — runs Postgres + app together (recommended)
 docker compose up -d --build      # → http://localhost:8011  (host 8011 → container 8001)
+# Host port is configurable: RTM_HOST_PORT=8042 docker compose up -d --build → :8042
 
 # Local dev — needs a Postgres reachable at DATABASE_URL
 cd backend && pip install -r requirements.txt
@@ -74,12 +75,17 @@ PG-MCP-RTM/
 
 > Postgres tables: `jobs`, `job_results`, `job_insights`, `audit_log`,
 > `rule_config_history`, `job_shares`.
+> `job_results` persists the **full** classifier output incl. AI enrichment
+> (`AI_Growth_Signal/Risk_Level/Action/Visit_Priority/Insight`), `Visit_Frequency`,
+> and momentum (`Growth_6M_vs_12M`, `Growth_3M_vs_6M`) — so History re-export and the
+> RTM Data page keep these fields. Schema additions are idempotent
+> `ALTER TABLE … ADD COLUMN IF NOT EXISTS` migrations run on boot in `_init_database`.
 
 ## Pages
 
 | Route | Page | Access | Description |
 |-------|------|--------|-------------|
-| `/` | Classify | all | Upload CSV, run pipeline (live log), results + Comparison tab |
+| `/` | Classify | all | Upload CSV/Excel, run pipeline (live log), results + Comparison tab |
 | `/history` | History | all | Past jobs (own + shared), per-job LLM cost, **Share** |
 | `/rtm` | RTM Data | all | Filterable outlet table + export |
 | `/compare` | Compare | all | Two-job comparison + outlet movement |
@@ -121,7 +127,7 @@ PG-MCP-RTM/
 > FastAPI auto docs (`/docs`, `/redoc`, `/openapi.json`) are **disabled** — API not browsable.
 
 ## Classification Logic
-Single CSV → Pareto split per `BranchName` (each branch is its own universe):
+Single CSV/Excel file → Pareto split per `BranchName` (each branch is its own universe):
 - **Pure Class A** ≤ Class A cutoff (default 80%) · **Class B** between cutoffs · **Class C** above
 - **F4 Distributor** — ≥N cartons/brand/month of a chosen item type → forced Class A Local (F4).
   **Treated as first-class across the app** — own KPI card, own summary row,
@@ -138,13 +144,17 @@ Every outlet stamped from DocDate: **New** (first buy <3M) · **Active** (bought
 Surfaced as 5-card KPI strip on Classify results + column on RTM Data + Excel.
 
 ## Upload Flow (2-stage)
+Accepts **CSV (.csv) and Excel (.xlsx/.xls)** — both client validation + `accept` allow all three.
 1. `POST /api/upload` — streams file (8 MB chunks) to `/app/uploads/{id}_{name}` on disk.
    XHR with `upload.onprogress` → live % bar. Cap 2 GB (frontend).
 2. `POST /api/classify?upload_id=X` — reads staged file, runs pipeline, writes DB.
-   `finally:` unlinks staged file.
+   Parse branches on extension: `.xlsx/.xls` → `pd.read_excel(engine="openpyxl")`,
+   else encoding-loop `pd.read_csv` (utf-8/latin-1/cp1252). `finally:` unlinks staged file.
 
-CSV preview (8 MB slice, client-side parse): row/branch/outlet counts, sample table,
-column-match chips, branch bars. No upload until "Run Classification" clicked.
+Client preview: CSV → 8 MB slice text parse; Excel → full workbook via **SheetJS `xlsx`**
+(lazy `import('xlsx')`, own bundle chunk), first sheet. Both feed a shared `finalizePreview`
+→ row/branch/outlet counts, sample table, column-match chips, branch bars.
+No upload until "Run Classification" clicked.
 
 ## AI Pipeline (parallel + chunked)
 `backend/main.py` calls `await asyncio.gather(enrich_task, insights_task)`:
@@ -212,8 +222,16 @@ wait loop) as managed children. `docker/init-rtm-db.sh` enables pgvector
 on first boot via Postgres `/docker-entrypoint-initdb.d/` convention.
 
 ## Design System
-**Claude.ai-style, flat** (zero border-radius). Inter font; token-only CSS variables
-(no hardcoded colors). Light/dark/auto via `[data-theme]` on `<html>`.
+**Claude.ai-style** with soft rounded corners (radius tokens `--r-sm…xl` = 6/8/12/16px,
+`--r-pill` 999px — used app-wide, ~75 refs; flip the tokens to restyle every page).
+Inter font; token-only CSS variables (no hardcoded colors). Light/dark/auto via
+`[data-theme]` on `<html>`.
+
+**Fonts**: Inter + JetBrains Mono load from Google Fonts CDN (graceful system fallback).
+**Material Symbols icons are self-hosted** — `frontend/static/fonts/material-symbols-outlined.ttf`
+served at `/fonts/...`, with `@font-face` + the `.material-symbols-outlined` class defined in
+`app.css`. Do NOT rely on the CDN for icons: on offline/proxied networks the CDN stylesheet
+fails and ligature names (`settings`, `history`…) render as raw text.
 
 | Token | Light | Dark |
 |-------|-------|------|
@@ -236,5 +254,6 @@ JWT_SECRET_KEY=change-in-production
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=admin123
 ADMIN_DISPLAY_NAME=Administrator
+RTM_HOST_PORT=8011                  # host port for docker-compose (maps → container 8001)
 ```
 LLM model/provider and LDAP are also configurable from the UI (Settings).
