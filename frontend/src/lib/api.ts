@@ -333,3 +333,20 @@ export async function getVersion(): Promise<VersionResponse> {
 export async function getCockpit(days = 7): Promise<any> {
   return fetchJSON(`/cockpit?days=${days}`);
 }
+
+// ── OIDC / SSO ──
+export async function getOidcProviders(): Promise<{ enabled: boolean; providers: { id: string; name: string }[] }> {
+  return fetchJSON('/auth/oidc/providers');
+}
+export async function getMe(): Promise<any> {
+  return fetchJSON('/auth/me');
+}
+export async function getOidcConfig(): Promise<any> {
+  return fetchJSON('/oidc-config');
+}
+export async function saveOidcConfig(cfg: any): Promise<any> {
+  return fetchJSON('/oidc-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
+}
+export async function testOidc(issuer: string): Promise<any> {
+  return fetchJSON('/oidc-test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ issuer }) });
+}

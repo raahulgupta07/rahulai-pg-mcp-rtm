@@ -6,7 +6,7 @@
 - **Database**: PostgreSQL 18 (`pgvector/pgvector:pg18`) via psycopg3 connection pool;
   **pgvector** extension enabled (ready for similarity features)
 - **AI**: Google Gemini 3.1 Flash Lite via OpenRouter (optional; rule-based fallback)
-- **Auth**: JWT (HS256) + JSON user store; optional LDAP / Active Directory
+- **Auth**: JWT (HS256) + JSON user store; optional LDAP / Active Directory + OIDC/OAuth2 SSO (multi-provider)
 
 ## Running
 
@@ -61,7 +61,7 @@ PG-MCP-RTM/
 │       ├── rules/          # Classification rule config + versioning
 │       ├── cockpit/        # Ops Cockpit — Pulse/Trends/Users/Actions/Audit (analytics perm)
 │       │                   #   (analytics/ is a redirect stub → /cockpit)
-│       └── users/          # Settings — Users / Model & Config / LDAP / Groups / Audit
+│       └── users/          # Settings — Users / Model & Config / LDAP / SSO / Groups / Audit
 ├── src/                    # Python classification engine
 │   ├── rtm_classifier.py   # Pareto 80/15/5 per branch — config-driven
 │   ├── ai_service.py       # AI enrichment + LLM insights + cost capture
@@ -94,7 +94,7 @@ PG-MCP-RTM/
 | `/docs` | Docs | all | Read-only reference (6 tabs) |
 | `/rules` | Rules | `rules` perm | Tune the engine — versioned, rollback |
 | `/cockpit` | Ops Cockpit | `analytics` perm | Live pulse + Trends/Users/Actions/Audit (merged Analytics). `/analytics` redirects here |
-| `/users` | Settings | super_admin | Users / Model & Config / LDAP / Groups / Audit |
+| `/users` | Settings | super_admin | Users / Model & Config / LDAP / SSO / Groups / Audit |
 
 ## API Endpoints (summary)
 
@@ -118,6 +118,8 @@ PG-MCP-RTM/
 | GET | `/api/docs-content` | Yes (read-only) |
 | GET/POST | `/api/settings` · POST `/api/llm-test` | super_admin |
 | GET/POST | `/api/ldap-config` · POST `/api/ldap-test` | super_admin |
+| GET/POST | `/api/oidc-config` · POST `/api/oidc-test` | super_admin — SSO providers |
+| GET | `/api/auth/oidc/providers` (No) · `/api/auth/oidc/{pid}/login` · `/callback` | OIDC SSO flow |
 | GET/POST/DELETE | `/api/users` (+`/{id}`) | super_admin |
 | PUT | `/api/users/{id}/password` · `/disabled` · `/ldap-link` · `/groups` | super_admin |
 | GET | `/api/users/basic` | Yes — minimal list for share picker |
@@ -186,6 +188,21 @@ sheet records who ran it, rule version, and **LLM tokens + cost**.
   the user's **home server**
 - **Email auto-merge** — LDAP login matching a local account's email links into it
 - **Group sync** — a group's `ldap_group` matched against the user's `memberOf` on each login
+
+## SSO — OIDC / OAuth2 (`backend/oidc.py`)
+Multi-provider OpenID Connect (Keycloak, Google, Microsoft, …). Config in
+`data/oidc_config.json` (Settings ▸ **SSO**, super_admin). No new deps — discovery/token via
+`requests`, id_token decoded as a trusted back-channel JWT.
+- Flow: `GET /api/auth/oidc/{pid}/login` (signed-state cookie → provider authorize) →
+  `…/callback` (CSRF state check → code exchange → claims → provision → **RTM JWT** →
+  `/login?token=…`; the login page swaps the token for the user via `/api/auth/me`).
+- `auth.provision_oidc_user` mirrors LDAP: match username/`oidc_username`, then
+  **email auto-merge** (toggle `merge_by_email`; **never into super_admin**), else create
+  (`source:"oidc"`). IdP role → admin if in a provider's `admin_roles`; groups synced via the
+  same per-group `ldap_group` mapping. Each provider sets `roles_claim`/`groups_claim`
+  (nested paths ok, e.g. `realm_access.roles`).
+- Public `GET /api/auth/oidc/providers` drives the login-page buttons; `POST /api/oidc-test`
+  checks issuer discovery. Redirect URI to register at the IdP: `{base}/api/auth/oidc/{pid}/callback`.
 
 ## Job Sharing
 `job_shares` table. A job owner or admin shares a job with specific users (History ▸ Share).

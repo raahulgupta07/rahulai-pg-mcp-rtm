@@ -27,6 +27,8 @@ Built for P&G Myanmar market data — 11,000+ outlets, 9 branches.
 - **Roles + Groups + Permissions** — 3 roles, plus admin-defined groups granting extra access
 - **LDAP / Active Directory** — up to 5 servers, per-user home server, email auto-merge,
   group-membership sync
+- **SSO — OIDC / OAuth2** — multi-provider (Keycloak, Google, Microsoft…), email auto-merge
+  (never into super_admin), IdP role + group mapping; configured in Settings ▸ SSO
 - **Job Sharing** — share a specific job with specific users
 - **Beautified Excel** — multi-sheet report incl. run-info stamp + comparison sheets + Class A (total) rollup row
 - **Coverage Gap Analysis** — township breakdown + Leaflet map with class-coloured outlet markers (F4 own teal color, contact/phone/address in popup)
@@ -43,7 +45,7 @@ Built for P&G Myanmar market data — 11,000+ outlets, 9 branches.
 | Backend | FastAPI (Python) |
 | Database | PostgreSQL 18 + pgvector (psycopg3 pool) |
 | AI | Google Gemini 3.1 Flash Lite via OpenRouter (optional) |
-| Auth | JWT (HS256) + LDAP / Active Directory |
+| Auth | JWT (HS256) + LDAP / Active Directory + OIDC/OAuth2 SSO |
 | Deploy | Docker + docker-compose (app + Postgres) |
 
 ## Quick Start
@@ -170,6 +172,7 @@ Defaults — all configurable on the **Rules** page, version-tracked with rollba
 - **Rules** (`/rules`) — Pareto cutoffs, wholesaler, category override, workload, growth, risk, AI
 - **Model & provider** (Settings ▸ Model & Config) — LLM model + base URL, with a Test button
 - **LDAP** (Settings ▸ LDAP) — up to 5 directory servers, per-server Test
+- **SSO / OIDC** (Settings ▸ SSO) — multi-provider OpenID Connect, per-provider Test + redirect URI
 - **Groups** (Settings ▸ Groups) — define groups, grant permissions, map to LDAP groups
 - **Single light theme** — locked in `app.html` (no per-user theme switcher)
 

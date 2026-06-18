@@ -1,13 +1,48 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { auth } from '$lib/stores/auth.svelte';
-  import { login } from '$lib/api';
+  import { login, getOidcProviders, getMe } from '$lib/api';
 
   let username = $state('');
   let password = $state('');
   let showPassword = $state(false);
   let error = $state('');
   let loading = $state(false);
+  let providers = $state<{ id: string; name: string }[]>([]);
+
+  const OIDC_ERRORS: Record<string, string> = {
+    oidc_state: 'SSO session expired or invalid — try again',
+    oidc_exchange: 'SSO token exchange failed — check provider config',
+    oidc_discovery: 'Could not reach the SSO provider',
+    oidc_claims: 'SSO provider returned no usable account',
+    oidc_denied: 'Your SSO account is not permitted to sign in',
+  };
+
+  onMount(async () => {
+    const url = new URL(window.location.href);
+    const token = url.searchParams.get('token');
+    const err = url.searchParams.get('error');
+    if (err) error = OIDC_ERRORS[err] || 'Sign-in failed';
+    if (token) {
+      // OIDC callback handed us a token — resolve the user, then finish login.
+      try {
+        auth.token = token;  // so getMe sends the bearer header
+        const me = await getMe();
+        auth.login(token, { id: me.id ?? me.user_id, username: me.username, role: me.role, display_name: me.display_name, permissions: me.permissions || [] });
+        history.replaceState(null, '', '/login');
+        goto('/');
+        return;
+      } catch {
+        auth.logout();
+        error = 'SSO sign-in failed — please try again';
+      }
+    }
+    try {
+      const r = await getOidcProviders();
+      if (r.enabled) providers = r.providers;
+    } catch { /* ignore */ }
+  });
 
   $effect(() => {
     if (auth.isAuthenticated) goto('/');
@@ -101,6 +136,18 @@
         {loading ? 'Signing in…' : 'Sign in'}
       </button>
     </form>
+
+    {#if providers.length}
+      <div class="sso-sep"><span>or continue with</span></div>
+      <div class="sso-list">
+        {#each providers as p}
+          <a class="btn-ghost sso-btn" href={`/api/auth/oidc/${p.id}/login`}>
+            <span class="material-symbols-outlined">login</span>
+            {p.name}
+          </a>
+        {/each}
+      </div>
+    {/if}
 
     <div class="login-footer">
       <span class="dot-active"></span>
@@ -219,6 +266,31 @@
   form .btn-block {
     margin-top: 4px;
   }
+
+  .sso-sep {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 20px 0 14px;
+    color: var(--text-faint);
+    font-size: 0.72rem;
+  }
+  .sso-sep::before, .sso-sep::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+  .sso-list { display: flex; flex-direction: column; gap: 8px; }
+  .sso-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    text-decoration: none;
+  }
+  .sso-btn .material-symbols-outlined { font-size: 18px; }
 
   .login-footer {
     display: flex;

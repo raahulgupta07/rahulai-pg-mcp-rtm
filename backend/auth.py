@@ -491,6 +491,58 @@ def _sync_ldap_groups(rec: dict, ldap_groups: list):
     rec["groups"] = matched
 
 
+def provision_oidc_user(info: dict, provider_id: str = "", merge_by_email: bool = True) -> dict:
+    """Find or create a local record for an OIDC/SSO-authenticated user, mirroring
+    the LDAP path. info = {username, mail, display_name, role, groups[]}.
+    Merge: (1) username / oidc alias, (2) email (never into super_admin). Groups
+    sync reuses the per-group `ldap_group` mapping (same directory-group concept)."""
+    users = _load_users()
+    target = info["username"]
+    mail = (info.get("mail") or "").strip().lower()
+    rec = None
+
+    for u in users:
+        if u["username"] == target or u.get("oidc_username") == target:
+            rec = u
+            break
+
+    if rec is None and merge_by_email and mail:
+        for u in users:
+            if u.get("role") == "super_admin":
+                continue
+            if (u.get("email") or "").strip().lower() == mail:
+                rec = u
+                rec["oidc_username"] = target
+                break
+
+    if rec is None:
+        import uuid
+        new_id = max((u["id"] for u in users), default=0) + 1
+        rec = {
+            "id": new_id,
+            "username": target,
+            "password": _hash_password(uuid.uuid4().hex),  # unusable placeholder
+            "role": info.get("role", "user"),
+            "display_name": info.get("display_name") or target,
+            "email": info.get("mail", ""),
+            "source": "oidc",
+            "groups": [],
+        }
+        users.append(rec)
+
+    # IdP-driven role (never downgrades a super_admin)
+    if rec.get("role") != "super_admin" and info.get("role"):
+        rec["role"] = info["role"]
+    if provider_id:
+        rec["oidc_provider"] = provider_id
+    _sync_ldap_groups(rec, info.get("groups"))
+    _save_users(users)
+
+    if rec.get("disabled"):
+        return None
+    return {"id": rec["id"], "username": rec["username"], "role": rec["role"], "display_name": rec["display_name"]}
+
+
 def _provision_ldap_user(ldap_user: dict, server_id: str = "", merge_by_email: bool = True) -> dict:
     """Find or create a local record for an LDAP-authenticated user, sync the
     user's groups from LDAP, and remember the home server.

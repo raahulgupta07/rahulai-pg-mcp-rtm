@@ -23,10 +23,11 @@ if env_path.exists():
             key, val = line.split("=", 1)
             os.environ.setdefault(key.strip(), val.strip())
 
-from fastapi import FastAPI, UploadFile, File, Query, HTTPException, Header, Depends
+from fastapi import FastAPI, UploadFile, File, Query, HTTPException, Header, Depends, Request, Cookie
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse, RedirectResponse
+import jwt
 from fastapi.staticfiles import StaticFiles
 import pandas as pd
 import numpy as np
@@ -44,7 +45,8 @@ from src.job_manager import get_job_manager
 from src.ai_service import get_ai_service, summarize_usage
 from backend.auth import authenticate_user, create_token, get_current_user, verify_token, list_users, create_user, delete_user, update_user_password, change_password, get_user_prefs, set_user_prefs, load_ldap_config, save_ldap_config, ldap_test, update_user_identity, set_user_disabled, list_groups, create_group, update_group, delete_group, set_user_groups, effective_permissions, PERMISSION_CATALOG
 from backend.version import APP_VERSION, get_changelog
-from backend.auth import login_failure_reason
+from backend.auth import login_failure_reason, provision_oidc_user, SECRET_KEY as AUTH_SECRET
+from backend import oidc as oidc_mod
 
 # Disable auto API docs (Swagger/ReDoc/OpenAPI) — backend not browsable by users.
 # The frontend's own /docs page is served via the SPA fallback below.
@@ -141,6 +143,101 @@ async def login(body: dict):
 async def get_me(user: dict = Depends(require_auth)):
     return {**user, "prefs": get_user_prefs(user["user_id"]),
             "permissions": effective_permissions(user["user_id"])}
+
+
+# ── OIDC / OAuth2 SSO (multi-provider; Keycloak, Google, Microsoft, …) ──
+def _oidc_redirect_uri(request: Request, pid: str) -> str:
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/api/auth/oidc/{pid}/callback"
+
+
+@app.get("/api/auth/oidc/providers")
+async def oidc_providers():
+    """Public — login page renders a button per enabled provider."""
+    provs = oidc_mod.public_providers()
+    return {"enabled": bool(provs), "providers": provs}
+
+
+@app.get("/api/auth/oidc/{pid}/login")
+async def oidc_login(pid: str, request: Request):
+    p = oidc_mod.get_provider(pid)
+    if not p:
+        raise HTTPException(status_code=404, detail="Unknown or disabled SSO provider")
+    state = jwt.encode(
+        {"pid": pid, "n": uuid.uuid4().hex,
+         "exp": datetime.utcnow() + timedelta(minutes=10)},
+        AUTH_SECRET, algorithm="HS256")
+    try:
+        url = await run_in_threadpool(oidc_mod.authorize_url, p, _oidc_redirect_uri(request, pid), state)
+    except Exception as e:
+        return RedirectResponse(f"/login?error=oidc_discovery", status_code=302)
+    resp = RedirectResponse(url, status_code=302)
+    resp.set_cookie("rtm_oidc_state", state, max_age=600, httponly=True, samesite="lax")
+    return resp
+
+
+@app.get("/api/auth/oidc/{pid}/callback")
+async def oidc_callback(pid: str, request: Request, code: str = "", state: str = "",
+                        rtm_oidc_state: str | None = Cookie(None)):
+    p = oidc_mod.get_provider(pid)
+    if not p:
+        raise HTTPException(status_code=404, detail="Unknown SSO provider")
+    # CSRF: signed state must match the cookie set at login
+    if not code or not state or state != rtm_oidc_state:
+        return RedirectResponse("/login?error=oidc_state", status_code=302)
+    try:
+        jwt.decode(state, AUTH_SECRET, algorithms=["HS256"])
+    except Exception:
+        return RedirectResponse("/login?error=oidc_state", status_code=302)
+    try:
+        redirect_uri = _oidc_redirect_uri(request, pid)
+        token = await run_in_threadpool(oidc_mod.exchange_code, p, code, redirect_uri)
+        claims = await run_in_threadpool(oidc_mod.claims_from_token, p, token)
+    except Exception:
+        return RedirectResponse("/login?error=oidc_exchange", status_code=302)
+
+    info = oidc_mod.user_info_from_claims(p, claims)
+    if not info.get("username"):
+        return RedirectResponse("/login?error=oidc_claims", status_code=302)
+    cfg = oidc_mod.load_oidc_config()
+    user = provision_oidc_user(info, pid, cfg.get("merge_by_email", True))
+    if not user:
+        return RedirectResponse("/login?error=oidc_denied", status_code=302)
+    token_jwt = create_token(user)
+    try:
+        get_database().log_action(user["username"], "LOGIN", f"SSO via {pid}")
+    except Exception:
+        pass
+    resp = RedirectResponse(f"/login?token={token_jwt}", status_code=302)
+    resp.delete_cookie("rtm_oidc_state")
+    return resp
+
+
+@app.get("/api/oidc-config")
+async def get_oidc_config_ep(user: dict = Depends(require_super_admin)):
+    return oidc_mod.load_oidc_config()
+
+
+@app.post("/api/oidc-config")
+async def save_oidc_config_ep(body: dict, user: dict = Depends(require_super_admin)):
+    oidc_mod.save_oidc_config(body)
+    oidc_mod._DISCOVERY.clear()  # re-discover on next use
+    get_database().log_action(user["username"], "SETTINGS", "Updated OIDC/SSO config")
+    return {"ok": True}
+
+
+@app.post("/api/oidc-test")
+async def oidc_test_ep(body: dict, user: dict = Depends(require_super_admin)):
+    """Reachability check — fetch the issuer's discovery document."""
+    issuer = (body.get("issuer") or "").rstrip("/")
+    if not issuer:
+        return {"ok": False, "error": "No issuer URL"}
+    try:
+        doc = await run_in_threadpool(oidc_mod.discover, issuer)
+        return {"ok": True, "authorization_endpoint": doc.get("authorization_endpoint"),
+                "token_endpoint": doc.get("token_endpoint")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 @app.post("/api/auth/change-password")
 async def change_password_ep(body: dict, user: dict = Depends(require_auth)):

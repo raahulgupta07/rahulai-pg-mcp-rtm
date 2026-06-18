@@ -2,12 +2,65 @@
   import { auth } from '$lib/stores/auth.svelte';
   import { getUsers, createUser, deleteUser, getSettings, saveSettings, getAuditLog, testLLM,
            getLdapConfig, saveLdapConfig, testLdap, linkUserLdap, resetPassword,
-           getGroups, createGroup, updateGroup, deleteGroup, setUserGroups } from '$lib/api';
+           getGroups, createGroup, updateGroup, deleteGroup, setUserGroups,
+           getOidcConfig, saveOidcConfig, testOidc } from '$lib/api';
   import ChapterHeading from '$lib/components/ChapterHeading.svelte';
 
   let users = $state([]);
   let loading = $state(true);
   let error = $state('');
+
+  // ── SSO / OIDC config ──
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  let oidcCfg = $state<any>({ enabled: false, merge_by_email: true, providers: [] });
+  let oidcLoaded = false;
+  let oidcSaving = $state(false);
+  let oidcMsg = $state('');
+  let oidcTest = $state<Record<number, string>>({});
+
+  async function loadOidc() {
+    try {
+      const c = await getOidcConfig();
+      c.providers = (c.providers || []).map((p: any) => ({
+        ...p, admin_roles: Array.isArray(p.admin_roles) ? p.admin_roles.join(', ') : (p.admin_roles || ''),
+      }));
+      oidcCfg = c;
+    } catch { /* ignore */ }
+    oidcLoaded = true;
+  }
+  function addProvider() {
+    oidcCfg.providers = [...oidcCfg.providers, {
+      id: 'sso' + (oidcCfg.providers.length + 1), name: 'Keycloak', issuer: '',
+      client_id: '', client_secret: '', scopes: 'openid email profile',
+      roles_claim: 'realm_access.roles', groups_claim: 'groups',
+      admin_roles: '', default_role: 'user', enabled: true,
+    }];
+  }
+  function removeProvider(i: number) {
+    oidcCfg.providers = oidcCfg.providers.filter((_: any, j: number) => j !== i);
+  }
+  async function saveOidc() {
+    oidcSaving = true; oidcMsg = '';
+    const cfg = {
+      ...oidcCfg,
+      providers: oidcCfg.providers.map((p: any) => ({
+        ...p,
+        admin_roles: typeof p.admin_roles === 'string'
+          ? p.admin_roles.split(',').map((s: string) => s.trim()).filter(Boolean)
+          : (p.admin_roles || []),
+      })),
+    };
+    try { await saveOidcConfig(cfg); oidcMsg = 'Saved ✓'; }
+    catch { oidcMsg = 'Save failed'; }
+    finally { oidcSaving = false; }
+  }
+  async function testProvider(i: number) {
+    oidcTest = { ...oidcTest, [i]: 'Testing…' };
+    try {
+      const r = await testOidc(oidcCfg.providers[i].issuer);
+      oidcTest = { ...oidcTest, [i]: r.ok ? 'Reachable ✓' : 'Failed: ' + (r.error || '') };
+    } catch { oidcTest = { ...oidcTest, [i]: 'Failed' }; }
+  }
 
   let newUsername = $state('');
   let newPassword = $state('');
@@ -442,11 +495,11 @@
 
 <!-- Tabs -->
 <div class="tab-bar">
-  {#each ['Users', 'Model & Config', 'LDAP / Directory', 'Groups', 'Audit Log'] as label, i}
+  {#each ['Users', 'Model & Config', 'LDAP / Directory', 'Groups', 'Audit Log', 'SSO'] as label, i}
     <button
       class="tab"
       class:active={settingsTab === i}
-      onclick={() => { settingsTab = i; if (i === 4 && !auditLoaded) loadAuditLog(); }}
+      onclick={() => { settingsTab = i; if (i === 4 && !auditLoaded) loadAuditLog(); if (i === 5 && !oidcLoaded) loadOidc(); }}
     >
       {label}
     </button>
@@ -1022,6 +1075,56 @@
       {/if}
     </div>
   {/if}
+
+<!-- ======== TAB 5: SSO / OIDC ======== -->
+{:else if settingsTab === 5}
+  <ChapterHeading title="SSO / OIDC" subtitle="OAuth2 / OpenID Connect — Keycloak, Google, Microsoft" />
+
+  <div class="card" style="margin-bottom:16px;">
+    <label class="sso-row">
+      <input type="checkbox" bind:checked={oidcCfg.enabled} />
+      <span><strong>Enable SSO</strong> — show provider buttons on the login page</span>
+    </label>
+    <label class="sso-row">
+      <input type="checkbox" bind:checked={oidcCfg.merge_by_email} />
+      <span>Auto-merge SSO logins into existing accounts by email (never into super_admin)</span>
+    </label>
+  </div>
+
+  {#each oidcCfg.providers as p, i}
+    <div class="card" style="margin-bottom:14px;">
+      <div class="sso-head">
+        <label class="sso-row" style="margin:0;">
+          <input type="checkbox" bind:checked={p.enabled} />
+          <strong>{p.name || p.id}</strong>
+        </label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          {#if oidcTest[i]}<span class="sso-test">{oidcTest[i]}</span>{/if}
+          <button class="btn-ghost btn-sm" onclick={() => testProvider(i)}>Test</button>
+          <button class="btn-danger btn-sm" onclick={() => removeProvider(i)}>Remove</button>
+        </div>
+      </div>
+      <div class="sso-grid">
+        <div class="field"><label class="label">Provider ID (URL-safe)</label><input class="input" bind:value={p.id} placeholder="keycloak" /></div>
+        <div class="field"><label class="label">Display name</label><input class="input" bind:value={p.name} placeholder="Keycloak" /></div>
+        <div class="field" style="grid-column:1/-1;"><label class="label">Issuer URL</label><input class="input" bind:value={p.issuer} placeholder="https://kc.example.com/realms/myrealm" /></div>
+        <div class="field"><label class="label">Client ID</label><input class="input" bind:value={p.client_id} placeholder="rtm-agent" /></div>
+        <div class="field"><label class="label">Client secret</label><input class="input" type="password" bind:value={p.client_secret} placeholder="••••••" /></div>
+        <div class="field"><label class="label">Scopes</label><input class="input" bind:value={p.scopes} placeholder="openid email profile" /></div>
+        <div class="field"><label class="label">Default role</label><input class="input" bind:value={p.default_role} placeholder="user" /></div>
+        <div class="field"><label class="label">Roles claim</label><input class="input" bind:value={p.roles_claim} placeholder="realm_access.roles" /></div>
+        <div class="field"><label class="label">Groups claim</label><input class="input" bind:value={p.groups_claim} placeholder="groups" /></div>
+        <div class="field" style="grid-column:1/-1;"><label class="label">Admin roles (comma-separated → RTM admin)</label><input class="input" bind:value={p.admin_roles} placeholder="rtm-admin, administrator" /></div>
+      </div>
+      <p class="sso-hint">Redirect URI for the provider: <code>{`${origin}/api/auth/oidc/${p.id}/callback`}</code></p>
+    </div>
+  {/each}
+
+  <div style="display:flex;gap:10px;align-items:center;">
+    <button class="btn-ghost" onclick={addProvider}>+ Add provider</button>
+    <button class="btn" onclick={saveOidc} disabled={oidcSaving}>{oidcSaving ? 'Saving…' : 'Save SSO config'}</button>
+    {#if oidcMsg}<span class="sso-test">{oidcMsg}</span>{/if}
+  </div>
 {/if}
 {/if}
 
@@ -1491,4 +1594,14 @@
     0%, 100% { transform: translateY(0); }
     50% { transform: translateY(-6px); }
   }
+
+  /* ── SSO / OIDC ── */
+  .sso-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 13px; color: var(--text); }
+  .sso-row input[type="checkbox"] { width: 16px; height: 16px; }
+  .sso-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .sso-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .sso-test { font-size: 12px; color: var(--text-muted); }
+  .sso-hint { font-size: 11px; color: var(--text-faint); margin-top: 10px; }
+  .sso-hint code { font-family: var(--font-mono); background: var(--surface-2); padding: 2px 6px; border-radius: var(--r-sm); }
+  @media (max-width: 700px) { .sso-grid { grid-template-columns: 1fr; } }
 </style>
