@@ -59,7 +59,8 @@ PG-MCP-RTM/
 │       ├── +page.svelte    # Classify (upload, pipeline, results, Comparison tab)
 │       ├── login/ history/ rtm/ compare/ coverage/ docs/
 │       ├── rules/          # Classification rule config + versioning
-│       ├── analytics/      # Platform analytics — 8 tabs (super_admin)
+│       ├── cockpit/        # Ops Cockpit — Pulse/Trends/Users/Actions/Audit (analytics perm)
+│       │                   #   (analytics/ is a redirect stub → /cockpit)
 │       └── users/          # Settings — Users / Model & Config / LDAP / Groups / Audit
 ├── src/                    # Python classification engine
 │   ├── rtm_classifier.py   # Pareto 80/15/5 per branch — config-driven
@@ -92,7 +93,7 @@ PG-MCP-RTM/
 | `/coverage` | Coverage | all | Township gap analysis |
 | `/docs` | Docs | all | Read-only reference (6 tabs) |
 | `/rules` | Rules | `rules` perm | Tune the engine — versioned, rollback |
-| `/analytics` | Analytics | `analytics` perm | Platform analytics — 8 tabs |
+| `/cockpit` | Ops Cockpit | `analytics` perm | Live pulse + Trends/Users/Actions/Audit (merged Analytics). `/analytics` redirects here |
 | `/users` | Settings | super_admin | Users / Model & Config / LDAP / Groups / Audit |
 
 ## API Endpoints (summary)
@@ -121,7 +122,9 @@ PG-MCP-RTM/
 | PUT | `/api/users/{id}/password` · `/disabled` · `/ldap-link` · `/groups` | super_admin |
 | GET | `/api/users/basic` | Yes — minimal list for share picker |
 | GET/POST/PUT/DELETE | `/api/groups` (+`/{id}`) | super_admin |
-| GET | `/api/audit` · `/api/analytics` | `analytics` perm |
+| GET | `/api/audit` · `/api/analytics` · `/api/cockpit` | `analytics` perm |
+| GET/POST | `/api/activity` · `/api/activity/seen` | Yes — notifications feed (derived from jobs + audit) |
+| GET | `/api/version` | Yes — app version + changelog (What's new) |
 | GET | `/api/health` | No |
 
 > FastAPI auto docs (`/docs`, `/redoc`, `/openapi.json`) are **disabled** — API not browsable.
@@ -190,12 +193,26 @@ Non-admin users see only their own runs + jobs shared with them; admin+ see all.
 
 ## LLM Cost Tracking
 Every OpenRouter call is sent with `usage:{include:true}` → real token counts + USD cost.
-Per job: `jobs.llm_prompt_tokens / llm_completion_tokens / llm_cost`. Shown on the History
-list, the Analytics **Cost** tab (totals + per-user), and the Excel Run Info sheet.
+Per job: `jobs.llm_prompt_tokens / llm_completion_tokens / llm_cost / llm_model`. Shown on the
+History list, the Cockpit **Pulse** tab (cost/tokens + models + per-user), and the Excel Run Info sheet.
 
-## Analytics (`/analytics`) — 8 tabs
-Overview · Activity (30-day trend) · Users (analytics + enable/disable) · Actions ·
-Audit Log (filterable + CSV) · Jobs · Cost · Auth & Security (local vs LDAP, failed logins).
+## Ops Cockpit (`/cockpit`) — merged observability
+Single super-admin/`analytics`-perm page (Analytics folded in; `/analytics` → redirect).
+Tabs: **Pulse** (default) · **Trends** · **Users** · **Actions** · **Audit Log**.
+- **Pulse** (`GET /api/cockpit?days=`) — live, 30s auto-refresh + range chips. KPI band
+  (jobs/success/tokens/cost/active users/failed logins/avg runtime/outlets), event feed
+  (jobs + audit), cost/tokens trend, **models** table, recent jobs (who · model · tokens ·
+  cost · duration · status). All **derived** from `jobs` + `audit_log` (no extra tables).
+- **Trends/Users/Actions/Audit** (`GET /api/analytics` + `/api/audit`) — 30-day chart,
+  per-user + enable/disable, actions-by-type, filterable audit explorer + CSV.
+
+Supporting per-run data: `jobs.llm_model` (stamped each run); `LOGIN_FAILED` logs a
+`reason:` (unknown_user/bad_password/disabled) for the security breakdown.
+
+## Notifications + version
+- **Activity bell** (top-right) with unread badge → panel: **Activity** feed (filters,
+  mark-all-read; `GET/POST /api/activity[/seen]`, unread via `prefs.activity_seen_at`)
+  + **What's new** (`GET /api/version` ← `backend/version.py` + `data/changelog.json`).
 
 ## Scalability
 - **Bundled image**: single container (Postgres + pgvector + FastAPI + SvelteKit
@@ -239,10 +256,12 @@ fails and ligature names (`settings`, `history`…) render as raw text.
 | `--accent` | `#C96442` terracotta | `#E89070` |
 | `--text` | `#2C2B26` | `#EDEAE0` |
 
-**Appearance** modal — 6 palettes + custom accent + density (per-user, persisted in
-`/api/preferences`). Desktop left sidebar + mobile bottom nav (`+layout.svelte`).
+**Single light theme** — locked via `<html data-theme="light">` in `app.html`; the
+Appearance/theme switcher was removed (dark tokens remain in `app.css` but unused).
+Desktop left sidebar + a **desktop top bar** (right-aligned bell · change-password · sign-out)
++ mobile bottom nav (`+layout.svelte`). The **activity bell** (badge) opens `ActivityPanel`.
 Reusable components: `KpiCard`, `DataTable`, `Badge` (A/B/C/F4), `ChapterHeading`,
-`Appearance`, `ChangePassword`. **No cyber/terminal theme — fully migrated 2026-05-26.**
+`ChangePassword`, `ActivityPanel`.
 
 ## Environment Variables
 ```

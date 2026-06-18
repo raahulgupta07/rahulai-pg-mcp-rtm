@@ -18,8 +18,12 @@ Built for P&G Myanmar market data — 11,000+ outlets, 9 branches.
 - **LLM Cost Tracking** — real OpenRouter token + USD cost captured per job
 - **Run Comparison** — every run compared to the previous: class counts, revenue, channels,
   branches, outlet movement — on screen and in Excel
-- **Platform Analytics** — 8-tab dashboard: usage, trends, per-user activity, audit explorer,
-  jobs, cost, security
+- **Ops Cockpit** (`/cockpit`) — one super-admin observability page (merged Analytics).
+  **Pulse** tab is live (30s auto-refresh): KPI band, event feed, cost/tokens, models,
+  recent jobs (who · model · tokens · cost · duration). Plus Trends (30-day chart),
+  Users (+enable/disable), Actions-by-type, and a filterable Audit explorer + CSV.
+- **Activity bell + What's new** — unread notifications feed (jobs + audit) and an
+  in-app version/changelog panel
 - **Roles + Groups + Permissions** — 3 roles, plus admin-defined groups granting extra access
 - **LDAP / Active Directory** — up to 5 servers, per-user home server, email auto-merge,
   group-membership sync
@@ -27,7 +31,7 @@ Built for P&G Myanmar market data — 11,000+ outlets, 9 branches.
 - **Beautified Excel** — multi-sheet report incl. run-info stamp + comparison sheets + Class A (total) rollup row
 - **Coverage Gap Analysis** — township breakdown + Leaflet map with class-coloured outlet markers (F4 own teal color, contact/phone/address in popup)
 - **Full-width Layout** — every page uses full content width; sidebar + content shell only
-- **Claude.ai-style Design** — flat zero-radius, Inter font, cream `#FAF9F5` / terracotta `#C96442` token system, light/dark/auto, 6 palettes + custom accent (per-user)
+- **Claude.ai-style Design** — soft rounded corners (radius tokens), Inter font, cream `#FAF9F5` / terracotta `#C96442` token system, single light theme, self-hosted icons (offline-safe)
 - **Audit Log** — every action tracked, incl. failed logins
 - **Account management** — password change/reset, disable, LDAP merge
 
@@ -117,7 +121,7 @@ effective access = role base ∪ groups. Groups can map to LDAP groups for auto-
 | Coverage | `/coverage` | all |
 | Docs | `/docs` | all |
 | Rules | `/rules` | `rules` permission |
-| Analytics | `/analytics` | `analytics` permission |
+| Ops Cockpit | `/cockpit` | `analytics` permission (`/analytics` redirects here) |
 | Settings | `/users` | super_admin |
 
 ## Input File
@@ -167,7 +171,7 @@ Defaults — all configurable on the **Rules** page, version-tracked with rollba
 - **Model & provider** (Settings ▸ Model & Config) — LLM model + base URL, with a Test button
 - **LDAP** (Settings ▸ LDAP) — up to 5 directory servers, per-server Test
 - **Groups** (Settings ▸ Groups) — define groups, grant permissions, map to LDAP groups
-- **Appearance** — theme, palette, density (per-user)
+- **Single light theme** — locked in `app.html` (no per-user theme switcher)
 
 ## Design System
 
@@ -185,7 +189,7 @@ Defaults — all configurable on the **Rules** page, version-tracked with rollba
 `@font-face` + class in `app.css`) — no Google Fonts CDN dependency, so icons render on
 offline / proxied networks.
 
-**Components:** `KpiCard`, `DataTable`, `Badge` (A/B/C/F4 solid + soft), `ChapterHeading`, `Appearance` modal (6 palettes + density + accent picker), `ChangePassword` modal.
+**Components:** `KpiCard`, `DataTable`, `Badge` (A/B/C/F4 solid + soft), `ChapterHeading`, `ActivityPanel` (notifications + What's new), `ChangePassword` modal.
 
 **Shell:** desktop left sidebar + mobile bottom nav (`+layout.svelte:422`).
 

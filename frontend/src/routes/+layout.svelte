@@ -27,8 +27,7 @@
     { label: 'Coverage', href: '/coverage', icon: 'map' },
     { label: 'Docs',     href: '/docs',     icon: 'menu_book' },
     { label: 'Rules',     href: '/rules',     icon: 'tune',       perm: 'rules' },
-    { label: 'Analytics', href: '/analytics', icon: 'monitoring', perm: 'analytics' },
-    { label: 'Cockpit',   href: '/cockpit',   icon: 'dashboard',  superOnly: true },
+    { label: 'Cockpit',   href: '/cockpit',   icon: 'monitoring', perm: 'analytics' },
     { label: 'Settings',  href: '/users',     icon: 'settings',   superOnly: true },
   ];
 

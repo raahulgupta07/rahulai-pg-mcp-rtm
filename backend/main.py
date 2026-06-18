@@ -420,8 +420,8 @@ def _build_cockpit(days: int = 7) -> dict:
 
 
 @app.get("/api/cockpit")
-async def get_cockpit(days: int = Query(7, ge=1, le=90), user: dict = Depends(require_super_admin)):
-    """Full ops cockpit aggregate — super-admin only."""
+async def get_cockpit(days: int = Query(7, ge=1, le=90), user: dict = Depends(require_perm("analytics"))):
+    """Full ops cockpit aggregate — analytics permission (super-admin always passes)."""
     return await run_in_threadpool(_build_cockpit, days)
 
 @app.get("/api/users")
