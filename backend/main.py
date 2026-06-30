@@ -747,12 +747,14 @@ async def _run_classify_pipeline(
     raw_bytes = None if upload_path else await file.read()
 
     if is_excel:
-        # Excel (.xlsx/.xls) — openpyxl reads the first sheet. No encoding loop:
-        # the workbook is binary, not text.
+        # Excel (.xlsx/.xls) — binary workbook, first sheet. No encoding loop.
+        # Engine by extension: openpyxl reads .xlsx ONLY; legacy .xls needs xlrd.
+        is_xls = source_name.lower().endswith(".xls")
+        engine = "xlrd" if is_xls else "openpyxl"
         try:
             src = upload_path if upload_path else io.BytesIO(raw_bytes)
-            sales_df = await run_in_threadpool(pd.read_excel, src, engine="openpyxl")
-            log.append(f"[OK] Excel parsed: {len(sales_df):,} rows, {len(sales_df.columns)} columns")
+            sales_df = await run_in_threadpool(pd.read_excel, src, engine=engine)
+            log.append(f"[OK] Excel parsed ({engine}): {len(sales_df):,} rows, {len(sales_df.columns)} columns")
         except Exception as e:
             if upload_path and upload_path.exists():
                 upload_path.unlink()

@@ -38,6 +38,26 @@ HEADER_BORDER = Border(
 )
 
 
+import re as _re
+
+
+def _safe_sheet_title(raw, existing) -> str:
+    """Excel-safe worksheet title: strip the forbidden chars (: \\ / ? * [ ]),
+    cap at 31, and de-duplicate against titles already in the workbook
+    (case-insensitive — Excel treats sheet names case-insensitively)."""
+    name = _re.sub(r'[:\\/?*\[\]]', '-', str(raw)).strip() or "Sheet"
+    name = name[:31]
+    lower = {t.lower() for t in existing}
+    if name.lower() not in lower:
+        return name
+    base = name[:28]  # leave room for a " N" suffix
+    for i in range(2, 1000):
+        cand = f"{base} {i}"
+        if cand.lower() not in lower:
+            return cand
+    return name[:31]
+
+
 def _style_sheet(ws, df, title=None):
     """Apply professional styling to a worksheet."""
     start_row = 1
@@ -336,7 +356,10 @@ class JobManager:
             for branch in branches:
                 branch_df = results_df[results_df["BranchName"] == branch].copy()
                 branch_df = branch_df.sort_values("TotalSales_2Yr", ascending=False)
-                sheet_name = str(branch)[:31]
+                # Excel forbids : \ / ? * [ ] in sheet titles and caps at 31 chars;
+                # a clash with an existing title raises too. Sanitize + dedupe so a
+                # branch like "Yangon/North" or "Region[1]" can't break the export.
+                sheet_name = _safe_sheet_title(branch, wb.sheetnames)
                 ws = wb.create_sheet(sheet_name)
                 _style_sheet(ws, branch_df, f"{str(branch).upper()} \u2014 OUTLET CLASSIFICATION")
 
