@@ -486,31 +486,55 @@ class RTMClassifier:
         # Dormant    : last purchase 3-12M ago
         # Lost       : last purchase > 12M ago
         if self.has_docdate and "FirstPurchaseDate" in df.columns and "LastPurchaseDate" in df.columns:
+            new_m = self._cfg("lifecycle", "new_months", 3)
+            active_m = self._cfg("lifecycle", "active_months", 3)
+            lost_m = self._cfg("lifecycle", "lost_months", 12)
+            gap_m = self._cfg("lifecycle", "reactivated_gap_months", 6)
+
             ref = self.max_date
-            three_m = ref - pd.DateOffset(months=3)
-            six_m = ref - pd.DateOffset(months=6)
-            twelve_m = ref - pd.DateOffset(months=12)
+            active_cut = ref - pd.DateOffset(months=active_m)
+            new_cut = ref - pd.DateOffset(months=new_m)
+            lost_cut = ref - pd.DateOffset(months=lost_m)
 
             first = pd.to_datetime(df["FirstPurchaseDate"], errors="coerce")
             last = pd.to_datetime(df["LastPurchaseDate"], errors="coerce")
-            span_months = ((last - first).dt.days / 30).fillna(0)
+
+            # A real dormancy gap: the longest stretch between two consecutive
+            # purchases. The old code used the first->last span instead, which
+            # labelled every long-tenured, continuously-buying outlet
+            # "Reactivated" (73% of them) even though they never went away.
+            gap_days = gap_m * 30.44
+            purchases = (
+                self.sales[["BranchName", "Cus.Code", "DocDate"]]
+                .dropna(subset=["DocDate"])
+                .drop_duplicates()
+                .sort_values(["BranchName", "Cus.Code", "DocDate"])
+            )
+            purchases["_gap"] = (
+                purchases.groupby(["BranchName", "Cus.Code"])["DocDate"].diff().dt.days
+            )
+            max_gap = purchases.groupby(["BranchName", "Cus.Code"])["_gap"].max()
+            gaps = (
+                pd.MultiIndex.from_arrays([df["BranchName"], df["Cus.Code"]])
+                .map(max_gap)
+                .to_series(index=df.index)
+                .astype(float)
+                .fillna(0)
+            )
 
             def life(row_idx):
                 f = first.iloc[row_idx]
                 l = last.iloc[row_idx]
                 if pd.isna(l):
                     return "Unknown"
-                if l < twelve_m:
+                if l < lost_cut:
                     return "Lost"
-                if l < three_m:
+                if l < active_cut:
                     return "Dormant"
-                # bought within last 3M
-                if not pd.isna(f) and f >= three_m:
+                # Bought within the active window from here on.
+                if not pd.isna(f) and f >= new_cut:
                     return "New"
-                # bought recently but has older history with a gap — reactivated heuristic:
-                # span > 6M AND recent purchase implies it was inactive then returned
-                if span_months.iloc[row_idx] > 6:
-                    # only call reactivated if a true gap likely existed (first purchase old, recent buy)
+                if gaps.iloc[row_idx] > gap_days:
                     return "Reactivated"
                 return "Active"
 

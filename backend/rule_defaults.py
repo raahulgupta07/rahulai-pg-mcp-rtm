@@ -20,6 +20,13 @@ DEFAULT_RULES = {
         "class_a_tier": "F4",          # visit tier assigned to Class A outlets
         "other_tier": "F2",            # visit tier assigned to everyone else
     },
+    "lifecycle": {
+        "new_months": 3,               # first purchase inside this window → New
+        "active_months": 3,            # bought inside this window → Active
+        "lost_months": 12,             # last purchase older than this → Lost
+        "reactivated_gap_months": 6,   # a real no-purchase gap this long, then a
+                                       #   return, → Reactivated (not first→last span)
+    },
     "workload": {
         "yangon_min": 25, "yangon_max": 30,
         "regional_min": 30, "regional_max": 35,
