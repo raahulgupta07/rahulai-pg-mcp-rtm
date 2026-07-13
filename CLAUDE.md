@@ -6,7 +6,8 @@
 - **Database**: PostgreSQL 18 (`pgvector/pgvector:pg18`) via psycopg3 connection pool;
   **pgvector** extension enabled (ready for similarity features)
 - **AI**: Google Gemini 3.1 Flash Lite via OpenRouter (optional; rule-based fallback)
-- **Auth**: JWT (HS256) + JSON user store; optional LDAP / Active Directory + OIDC/OAuth2 SSO (multi-provider)
+- **Auth**: JWT (HS256, **key auto-generated on first boot** → `data/.jwt_secret`) + JSON user store;
+  optional LDAP / Active Directory + OIDC/OAuth2 SSO (multi-provider)
 
 ## Running
 
@@ -75,7 +76,8 @@ PG-MCP-RTM/
 ```
 
 > Postgres tables: `jobs`, `job_results`, `job_insights`, `audit_log`,
-> `rule_config_history`, `job_shares`.
+> `rule_config_history`, `job_shares`, **`export_jobs`** (async Excel build progress).
+> All created idempotently in `_init_database()` on every boot → **upgrades self-migrate**.
 > `job_results` persists the **full** classifier output incl. AI enrichment
 > (`AI_Growth_Signal/Risk_Level/Action/Visit_Priority/Insight`), `Visit_Frequency`,
 > and momentum (`Growth_6M_vs_12M`, `Growth_3M_vs_6M`) — so History re-export and the
@@ -106,7 +108,10 @@ PG-MCP-RTM/
 | GET/POST | `/api/preferences` | Yes — per-user appearance |
 | POST | `/api/upload` · DELETE `/api/upload/{id}` | Yes — stages file to disk first |
 | POST | `/api/classify?upload_id=X` | Yes — **sync** (back-compat). Blocks for full run. |
-| POST | `/api/classify-async?upload_id=X` | Yes — **async**. Returns `{job_id}` instantly. Reserves job, schedules pipeline as `asyncio.create_task`. LB-timeout safe. |
+| POST | `/api/classify-async?upload_id=X` | Yes — **async**. Returns `{job_id}` instantly. Reserves job, schedules pipeline as `asyncio.create_task`. LB-timeout safe. **No threshold params** — cutoffs come from `/rules`. |
+| GET | `/api/uploads/{id}/preview?rows=N` | Yes — server-side preview (openpyxl `read_only`) for files the browser can't parse |
+| POST | `/api/jobs/{id}/export-async` | Yes — background Excel build. Optional body `{cus_codes:[…]}` exports only those outlets (filtered export). |
+| GET | `/api/exports/{eid}/status` · `/download` | Yes — build %, then `FileResponse` with real `Content-Length` |
 | GET | `/api/jobs/{id}/status` | Yes — lightweight poller. Returns `{status, step/total, message, log[], ready, error}`. |
 | GET | `/api/jobs/{id}/result` | Yes — returns saved full payload when status=completed. |
 | GET | `/api/f4-analysis?job_id=X` | Yes — F4 deep-dive: health, top-10, churn-risk, per-branch |
@@ -141,12 +146,27 @@ Single CSV/Excel file → Pareto split per `BranchName` (each branch is its own 
 - **Category override** — outlet dominating a category (≥cutoff%) → Class A {category}
 - **Class A (total)** = Pure A + F4 + Category — explicit rollup row
 
-All thresholds are **config-driven** (`/rules`) — no hardcoded values.
+All Pareto/F4/category thresholds are **config-driven** (`/rules`). The Classify page shows them
+read-only (**the old cutoff sliders were removed — they never reached the classifier**; it has always
+used `load_rule_config()`, so a slider value only got stamped on the job row, misreporting the run).
+
+> Still hardcoded despite older docs claiming otherwise: the 12M/6M/3M period windows,
+> the `"Yangon"` branch-name string in workload, and the `"Wholesales"` channel shortcut.
 
 ## Outlet Lifecycle (cohort)
 Every outlet stamped from DocDate: **New** (first buy <3M) · **Active** (bought <3M)
-· **Reactivated** (returned after >6M gap) · **Dormant** (3–12M ago) · **Lost** (>12M ago).
+· **Reactivated** (a real no-purchase **gap** >6M, then returned) · **Dormant** (3–12M ago) · **Lost** (>12M ago).
 Surfaced as 5-card KPI strip on Classify results + column on RTM Data + Excel.
+
+Thresholds live in the **`lifecycle`** rule-config section (`new_months`, `active_months`,
+`lost_months`, `reactivated_gap_months`).
+
+> ★ "Reactivated" used to test only `first→last span > 6M`, never an actual gap — so any
+> long-tenured, continuously-buying outlet was labelled Reactivated (**73% of them**). Fixed to
+> compute the longest stretch between consecutive purchases.
+> ★ `Lifecycle_Stage` is written into `job_results` **at classify time** and is NOT backfilled —
+> jobs classified before the fix keep the bad cohorts. Re-run to correct them.
+> ★ "now" = `max(DocDate)` **in the file**, not today. A stale file makes everything look Active.
 
 ## Upload Flow (2-stage)
 Accepts **CSV (.csv) and Excel (.xlsx/.xls)** — both client validation + `accept` allow all three.
@@ -156,10 +176,23 @@ Accepts **CSV (.csv) and Excel (.xlsx/.xls)** — both client validation + `acce
    Parse branches on extension: `.xlsx/.xls` → `pd.read_excel(engine="openpyxl")`,
    else encoding-loop `pd.read_csv` (utf-8/latin-1/cp1252). `finally:` unlinks staged file.
 
-Client preview: CSV → 8 MB slice text parse; Excel → full workbook via **SheetJS `xlsx`**
-(lazy `import('xlsx')`, own bundle chunk), first sheet. Both feed a shared `finalizePreview`
-→ row/branch/outlet counts, sample table, column-match chips, branch bars.
-No upload until "Run Classification" clicked.
+## Data Preview (on file pick, before upload)
+Browsable, searchable, paged table of the parsed rows + column-match chips + branch bars +
+**⚠ unrecognised-column warning** (unknown headers are silently dropped by the engine, so a
+typo'd `Cus_Code` used to fail deep in the pipeline with no hint).
+
+- CSV → 8 MB slice text parse. Excel → SheetJS (lazy `import('xlsx')`), `dense:true` +
+  `sheetRows` cap; **`!fullref`** recovers the sheet's true row count so scaled stats stay honest.
+- **★★★ Big workbooks CANNOT be parsed in a browser.** A 113 MB `.xlsx` here holds a **799 MB
+  uncompressed `sheet1.xml`**; SheetJS must materialise it as one JS string, past V8's ~512 MB
+  cap → workbook with zero sheets. It used to fail **silently** (`console.warn`, empty panel).
+  Now: parse errors surface, and the file falls back to **`GET /api/uploads/{id}/preview`**
+  (openpyxl `read_only` streams the same sheet in **0.2s**). That staged upload is **reused** by
+  `handleClassify` — the file is not sent twice.
+- Server path shows only exact facts (rows, columns, sheet). Outlets/branches/date-range need a
+  full pass (**38.6s** on 743k rows) → shown as "counted at classify", never extrapolated.
+
+No upload until "Run Classification" clicked (except the large-file preview fallback above).
 
 ## AI Pipeline (parallel + chunked)
 `backend/main.py` calls `await asyncio.gather(enrich_task, insights_task)`:
@@ -176,6 +209,35 @@ No upload until "Run Classification" clicked.
 `wholesaler`, `category_override`, `frequency`, `workload`, `growth`, `risk`, `ai`.
 - Each save → a **version** in `rule_config_history` — viewable + **rollback**
 - Each job stores the rule snapshot + version it ran with
+
+## Excel Export — async + progress (`export_jobs`)
+`POST /api/jobs/{id}/export-async` → poll `/api/exports/{eid}/status` → `/download`.
+Progress lives in Postgres (`export_jobs`), so **any of the 4 workers can answer the poll**.
+Build % is weighted by **cells, not sheets** ("All Results" is most of the work); download % comes
+from a real `Content-Length`. Built files pruned after 24h. Filtered export = optional body
+`{cus_codes:[…]}`.
+
+- **★★★ 76s → 11s.** `_style_sheet` built a **new `Font()`/`Alignment()` per cell** and walked the
+  frame with `iterrows()` — ~800k cells on All Results, ~1.7M across per-branch sheets. Measured:
+  values cost 1.2s, the four style-property setters cost **11s** (each setter rebuilds the cell's
+  style array). Fix = one shared **`StyleArray`** per (font, fill, numfmt) combo assigned to
+  `cell._style` (12.3s → 1.5s), plus `to_numpy()` instead of `iterrows()`.
+- **★★★ Download was silently dead**: the `<a>` was never appended to the DOM and the object URL
+  was `revokeObjectURL`'d **in the same tick** as `.click()` → browser killed the in-flight 12.7 MB
+  download. No error either (no `catch` on the handler). Fixed on every download path.
+- ★ Legacy sync `GET /api/jobs/{id}/export` has **NO `_job_visible` check** — any authed user can
+  export any job. The async endpoints enforce it. **Still open.**
+
+## Filters (Classify + RTM Data)
+`MultiSelect.svelte` — checkbox dropdown, search auto-appears >8 options. Branch · Class ·
+Lifecycle · Risk, plus `More` → Growth · Priority · Category · Principal · Township · Route ·
+revenue & growth ranges. **Values OR within a filter, AND across filters; an empty list never
+narrows.** Removable chip per selected value. One `$derived` (`filteredResults`) feeds the KPI
+strip and every tab.
+
+- Dropped as dead: `OutletChannel` (one value across all rows), `VAN` (all null),
+  `Visit_Frequency` (identical to Classification — F4 count == Class A total, exactly).
+- Export honours the filters via `☑ Apply current filters` (Excel + CSV).
 
 ## Run Comparison
 Each job is compared to the previous run — class counts, revenue, by-channel, by-branch,
@@ -286,10 +348,52 @@ DATABASE_URL=postgresql://rtm:rtm@postgres:5432/rtm   # set by docker-compose
 OPENROUTER_API_KEY=sk-or-v1-...     # AI insights (optional; rule-based fallback)
 LLM_MODEL=google/gemini-3.1-flash-lite-preview
 LLM_BASE_URL=https://openrouter.ai/api/v1
-JWT_SECRET_KEY=change-in-production
+# JWT_SECRET_KEY=                   # OPTIONAL — auto-generated to data/.jwt_secret on first boot
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=admin123
 ADMIN_DISPLAY_NAME=Administrator
 RTM_HOST_PORT=8011                  # host port for docker-compose (maps → container 8001)
 ```
 LLM model/provider and LDAP are also configurable from the UI (Settings).
+
+
+## JWT signing key (`backend/auth.py`)
+Auto-generated on first boot → `data/.jwt_secret` (gitignored, `0600`). **The hardcoded fallback
+`"rtm-command-center-secret-change-in-prod"` is GONE** — it was in `.env.example` too, so any deploy
+that skipped the var signed tokens with a secret published in the repo (forgeable super_admin).
+
+Precedence: explicit `JWT_SECRET_KEY` env → persisted file → generate + persist.
+- ★★★ We run **4 uvicorn workers**. A per-process key ⇒ tokens signed by one worker are rejected by
+  the other three (random 401s). The key must be **shared**, hence persisted. First boot has all 4
+  racing → create with **`O_CREAT|O_EXCL`** (atomic): one wins, the losers read the winner's file.
+- ★ Env vars are baked in at **container creation** — a `restart` keeps an old `JWT_SECRET_KEY`.
+  Rotating requires **`--force-recreate`**.
+- ★ Unwritable `data/` → **raise**, never fall back (a per-process key breaks auth loudly, which
+  beats silently signing with a guessable secret).
+
+## Operational landmines
+- **★★★ SINGLE REPLICA ONLY.** Uploads (`/app/uploads`), exports (`/app/outputs`), `users.json`,
+  `groups.json` and `.jwt_secret` are all **container-local**. With 2+ replicas: upload staged on
+  pod A → `classify-async` routed to pod B = **404**; export built on A → download hits B = **410
+  after the bar reaches 100%**; each pod mints its own JWT key = **random 401s**; user accounts
+  diverge. To scale out you must first: `JWT_SECRET_KEY` from a secret store, uploads/exports → S3,
+  `users.json` → Postgres, pgbouncer (4 workers × 32 conns = **128/pod** vs PG `max_connections=200`
+  → **two pods exhaust it**), and a real job queue.
+- **★★ Memory: needs ≥4 GB.** Measured on a 113 MB / 743k-row xlsx: `pd.read_excel` alone peaks at
+  **1.30 GB**; full pipeline 2–3 GB. A 2 GB host is **OOM-killed mid-classify with no error in the
+  UI** (the process is just gone).
+- ★ `classify-async` / `export-async` run as `asyncio.create_task` **inside the web process**. Pod
+  killed mid-run ⇒ job stuck `status='processing'` forever, nothing requeues it.
+- ★ Pareto ties are **non-deterministic**: `sort_values("TotalSales_2Yr")` has no secondary key and
+  pandas quicksort is unstable → outlets tied at the 80/95 boundary can flip class between identical
+  runs.
+- ★ `Cartons = TotalPcs / NumInBuy` has **no zero guard** → `NumInBuy=0` ⇒ `inf` ⇒ trivially passes
+  the F4 threshold. One bad master-data row becomes a "distributor".
+- ★ `groupby` **silently drops** rows with null `BranchName`/`Cus.Code` — revenue vanishes, no warning.
+- ★ `TotalSales_2Yr` is **not 2 years** — it's lifetime sales over the file's span. It is the Pareto
+  sort key *and* denominator.
+- ★ Still unfixed security: unsalted SHA-256 passwords · `users.json` written with no lock (4 workers
+  race) · OIDC `id_token` **never signature-verified** · `CORS allow_origins=["*"]` · default
+  `admin`/`admin123`.
+
+> Install/upgrade runbook → **[INSTALL.md](INSTALL.md)**.
