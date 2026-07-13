@@ -248,6 +248,65 @@ class RTMDatabase:
                 )
             """)
 
+            # Excel builds run as background tasks; progress lives here so any
+            # uvicorn worker can answer the poll, not just the one that started it.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS export_jobs (
+                    export_id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL,
+                    username TEXT,
+                    status TEXT DEFAULT 'building',
+                    step INTEGER DEFAULT 0,
+                    total INTEGER DEFAULT 100,
+                    message TEXT DEFAULT '',
+                    file_path TEXT,
+                    size_bytes BIGINT DEFAULT 0,
+                    error_message TEXT,
+                    created_at TEXT
+                )
+            """)
+
+    # ── Excel export jobs ──
+
+    def create_export(self, export_id: str, job_id: str, username: str):
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO export_jobs (export_id, job_id, username, status, message, created_at) "
+                "VALUES (%s, %s, %s, 'building', 'Queued', %s)",
+                (export_id, job_id, username, datetime.now().isoformat()),
+            )
+
+    def update_export_progress(self, export_id: str, step: int, total: int, message: str):
+        try:
+            with self.pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE export_jobs SET step=%s, total=%s, message=%s WHERE export_id=%s",
+                    (int(step), int(total), str(message)[:200], export_id),
+                )
+        except Exception:
+            pass  # a dropped progress tick must never kill the build
+
+    def complete_export(self, export_id: str, file_path: str, size_bytes: int):
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE export_jobs SET status='ready', step=total, message='Ready', "
+                "file_path=%s, size_bytes=%s WHERE export_id=%s",
+                (file_path, int(size_bytes), export_id),
+            )
+
+    def fail_export(self, export_id: str, error: str):
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE export_jobs SET status='failed', error_message=%s WHERE export_id=%s",
+                (str(error)[:500], export_id),
+            )
+
+    def get_export(self, export_id: str) -> Optional[dict]:
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT * FROM export_jobs WHERE export_id=%s", (export_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
     # ── Audit log ──
 
     def log_action(self, username: str, action: str, details: str = "", user_id: int = 0):

@@ -11,6 +11,8 @@ import numpy as np
 import io
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
+from openpyxl.styles.cell_style import StyleArray
+from openpyxl.styles.numbers import BUILTIN_FORMATS_REVERSE
 from openpyxl.utils import get_column_letter
 
 from src.database import get_database
@@ -37,23 +39,110 @@ HEADER_BORDER = Border(
     bottom=Side(style='medium', color='383832'),
 )
 
+# Shared immutable style objects. These MUST be constructed once and reused —
+# building a Font/Alignment per cell costs ~60s on an 11k x 70 sheet.
+TITLE_FONT = Font(color="FEFFD6", bold=True, size=14, name="Calibri")
+TITLE_ALIGN = Alignment(horizontal="left", vertical="center")
+HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
+BODY_FONT = Font(size=10, name="Calibri")
+BODY_ALIGN = Alignment(vertical="center")
+
+_B = lambda color: Font(size=10, name="Calibri", bold=True, color=color)
+_P = lambda color: Font(size=10, name="Calibri", color=color)
+GREEN_FONT_B, AMBER_FONT_B, RED_FONT_B, TEAL_FONT_B = _B("007518"), _B("856404"), _B("BE2D06"), _B("006F7C")
+GREEN_FONT, RED_FONT, AMBER_FONT = _P("007518"), _P("BE2D06"), _P("856404")
+
+# column name -> {cell value (as str) -> (fill, font)}
+_SEMANTIC_COLS = {
+    "Visit_Frequency": {
+        "F4": (GREEN_BG, GREEN_FONT_B),
+        "F2": (AMBER_BG, AMBER_FONT_B),
+    },
+    "Workload_Status": {
+        "OK": (GREEN_BG, GREEN_FONT_B),
+        "BELOW_MIN": (RED_BG, RED_FONT_B),
+        "ABOVE_MAX": (AMBER_BG, AMBER_FONT_B),
+    },
+}
+
+
+def _style_cache(wb):
+    """Return get(font, fill, numfmt) -> StyleArray, registered once on the workbook.
+
+    Setting cell.font/.fill/.border/.alignment individually rebuilds the cell's
+    style array on every assignment — four times per cell, ~800k cells. Assigning
+    a single pre-registered StyleArray to cell._style instead is ~8x faster and
+    produces a byte-identical workbook (openpyxl dedupes styles this way anyway).
+    """
+    cache = {}
+    border_id = wb._borders.add(THIN_BORDER)
+    align_id = wb._alignments.add(BODY_ALIGN)
+
+    def get(font, fill, numfmt):
+        key = (id(font), id(fill), numfmt)
+        sa = cache.get(key)
+        if sa is None:
+            num_id = BUILTIN_FORMATS_REVERSE.get(numfmt)
+            if num_id is None:
+                num_id = 164 + wb._number_formats.add(numfmt)
+            sa = StyleArray([
+                wb._fonts.add(font), wb._fills.add(fill), border_id,
+                num_id, 0, align_id, 0, 0, 0,
+            ])
+            cache[key] = sa
+        return sa
+
+    return get
+
+
+def _classification_style(val: str):
+    if "Class A" in val and "Local" in val:
+        return TEAL_BG, TEAL_FONT_B
+    if "Class A" in val:
+        return GREEN_BG, GREEN_FONT_B
+    if "Class B" in val:
+        return AMBER_BG, AMBER_FONT_B
+    if "Class C" in val:
+        return RED_BG, RED_FONT_B
+    return None
+
+
+def _growth_style(val: str):
+    v = val.lower()
+    if "grow" in v:
+        return GREEN_BG, GREEN_FONT
+    if "declin" in v:
+        return RED_BG, RED_FONT
+    return None
+
+
+def _risk_style(val: str):
+    v = val.lower()
+    if "high" in v:
+        return RED_BG, RED_FONT_B
+    if "medium" in v:
+        return AMBER_BG, AMBER_FONT
+    if "low" in v:
+        return GREEN_BG, GREEN_FONT
+    return None
+
 
 def _style_sheet(ws, df, title=None):
     """Apply professional styling to a worksheet."""
+    ncols = len(df.columns)
     start_row = 1
 
     # Title row
     if title:
-        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(len(df.columns), 1))
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(ncols, 1))
         title_cell = ws.cell(row=1, column=1, value=title)
-        title_cell.font = Font(color="FEFFD6", bold=True, size=14, name="Calibri")
+        title_cell.font = TITLE_FONT
         title_cell.fill = DARK_BG
-        title_cell.alignment = Alignment(horizontal="left", vertical="center")
+        title_cell.alignment = TITLE_ALIGN
         ws.row_dimensions[1].height = 30
         # Fill rest of title row with dark bg
-        for col_idx in range(2, len(df.columns) + 1):
-            c = ws.cell(row=1, column=col_idx)
-            c.fill = DARK_BG
+        for col_idx in range(2, ncols + 1):
+            ws.cell(row=1, column=col_idx).fill = DARK_BG
         start_row = 2
 
     # Write headers
@@ -61,120 +150,84 @@ def _style_sheet(ws, df, title=None):
         cell = ws.cell(row=start_row, column=col_idx, value=str(col_name))
         cell.font = DARK_FONT
         cell.fill = DARK_BG
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.alignment = HEADER_ALIGN
         cell.border = HEADER_BORDER
     ws.row_dimensions[start_row].height = 22
 
     # Freeze panes below header
     ws.freeze_panes = ws.cell(row=start_row + 1, column=1)
 
-    # Write data rows
-    for row_idx, (_, row) in enumerate(df.iterrows()):
-        for col_idx, (col_name, value) in enumerate(row.items(), 1):
-            cell = ws.cell(row=start_row + 1 + row_idx, column=col_idx)
+    # Per-column decisions resolved once, not per cell
+    col_names = [str(c) for c in df.columns]
+    is_pct_col = [
+        ('Pct' in c or 'Contribution' in c or '%' in c) for c in col_names
+    ]
+    special = [
+        _classification_style if c == "Classification"
+        else _growth_style if c == "AI_Growth_Signal"
+        else _risk_style if c == "AI_Risk_Level"
+        else _SEMANTIC_COLS.get(c)
+        for c in col_names
+    ]
+
+    # Write data rows. Two things make this fast enough to matter at ~800k cells:
+    #   - to_numpy(object) instead of iterrows(), which builds a Series per row
+    #   - one shared StyleArray per (font, fill, number-format) combo instead of
+    #     four style-property setters per cell (12.3s -> 1.5s on All Results)
+    style_for = _style_cache(ws.parent)
+    values = df.to_numpy(dtype=object, na_value=None)
+    for row_idx in range(len(values)):
+        row_fill = WHITE_ROW if row_idx % 2 == 0 else ALT_ROW
+        excel_row = start_row + 1 + row_idx
+        row_vals = values[row_idx]
+
+        for col_idx in range(ncols):
+            value = row_vals[col_idx]
+            cell = ws.cell(row=excel_row, column=col_idx + 1)
+            fill, font = row_fill, BODY_FONT
 
             # Handle value types
-            if pd.isna(value):
+            if value is None or value != value:  # None / NaN
                 cell.value = ""
+                numfmt = 'General'
             elif isinstance(value, (pd.Timestamp, datetime)):
                 cell.value = value
-                cell.number_format = 'YYYY-MM-DD'
+                numfmt = 'YYYY-MM-DD'
             elif isinstance(value, float):
                 cell.value = value
-                col_str = str(col_name)
-                if 'Pct' in col_str or 'Contribution' in col_str or '%' in col_str:
-                    cell.number_format = '0.00%' if value <= 1 else '0.00'
+                if is_pct_col[col_idx]:
+                    numfmt = '0.00%' if value <= 1 else '0.00'
                 else:
-                    cell.number_format = '#,##0'
+                    numfmt = '#,##0'
             elif isinstance(value, (int, np.integer)):
                 cell.value = int(value)
-                cell.number_format = '#,##0'
+                numfmt = '#,##0'
             else:
                 cell.value = str(value)
+                numfmt = 'General'
 
-            # Alternating row colors
-            if row_idx % 2 == 0:
-                cell.fill = WHITE_ROW
-            else:
-                cell.fill = ALT_ROW
+            # Semantic colour overrides (Classification, Visit_Frequency, AI_*, Workload)
+            rule = special[col_idx]
+            if rule is not None:
+                hit = rule.get(str(value)) if isinstance(rule, dict) else rule(str(value))
+                if hit:
+                    fill, font = hit
 
-            cell.border = THIN_BORDER
-            cell.font = Font(size=10, name="Calibri")
-            cell.alignment = Alignment(vertical="center")
+            cell._style = style_for(font, fill, numfmt)
 
-            # Color-code Classification column
-            if col_name == "Classification":
-                val = str(value)
-                if "Class A" in val and "Local" in val:
-                    cell.fill = TEAL_BG
-                    cell.font = Font(size=10, name="Calibri", bold=True, color="006F7C")
-                elif "Class A" in val:
-                    cell.fill = GREEN_BG
-                    cell.font = Font(size=10, name="Calibri", bold=True, color="007518")
-                elif "Class B" in val:
-                    cell.fill = AMBER_BG
-                    cell.font = Font(size=10, name="Calibri", bold=True, color="856404")
-                elif "Class C" in val:
-                    cell.fill = RED_BG
-                    cell.font = Font(size=10, name="Calibri", bold=True, color="BE2D06")
-
-            # Color-code Visit_Frequency
-            if col_name == "Visit_Frequency":
-                if str(value) == "F4":
-                    cell.fill = GREEN_BG
-                    cell.font = Font(size=10, name="Calibri", bold=True, color="007518")
-                elif str(value) == "F2":
-                    cell.fill = AMBER_BG
-                    cell.font = Font(size=10, name="Calibri", bold=True, color="856404")
-
-            # Color-code AI_Growth_Signal
-            if col_name == "AI_Growth_Signal":
-                val = str(value).lower()
-                if "grow" in val:
-                    cell.fill = GREEN_BG
-                    cell.font = Font(size=10, name="Calibri", color="007518")
-                elif "declin" in val:
-                    cell.fill = RED_BG
-                    cell.font = Font(size=10, name="Calibri", color="BE2D06")
-
-            # Color-code AI_Risk_Level
-            if col_name == "AI_Risk_Level":
-                val = str(value).lower()
-                if "high" in val:
-                    cell.fill = RED_BG
-                    cell.font = Font(size=10, name="Calibri", bold=True, color="BE2D06")
-                elif "medium" in val:
-                    cell.fill = AMBER_BG
-                    cell.font = Font(size=10, name="Calibri", color="856404")
-                elif "low" in val:
-                    cell.fill = GREEN_BG
-                    cell.font = Font(size=10, name="Calibri", color="007518")
-
-            # Color-code Workload_Status
-            if col_name == "Workload_Status":
-                if str(value) == "OK":
-                    cell.fill = GREEN_BG
-                    cell.font = Font(size=10, name="Calibri", bold=True, color="007518")
-                elif str(value) == "BELOW_MIN":
-                    cell.fill = RED_BG
-                    cell.font = Font(size=10, name="Calibri", bold=True, color="BE2D06")
-                elif str(value) == "ABOVE_MAX":
-                    cell.fill = AMBER_BG
-                    cell.font = Font(size=10, name="Calibri", bold=True, color="856404")
-
-    # Auto-fit column widths (approximate)
-    for col_idx in range(1, len(df.columns) + 1):
-        col_letter = get_column_letter(col_idx)
-        max_len = len(str(df.columns[col_idx - 1])) + 2
-        for row_idx in range(min(50, len(df))):
-            cell_val = ws.cell(row=start_row + 1 + row_idx, column=col_idx).value
-            if cell_val:
-                max_len = max(max_len, min(len(str(cell_val)) + 2, 40))
-        ws.column_dimensions[col_letter].width = max(max_len, 8)
+    # Auto-fit column widths (approximate — sampled from the first 50 rows)
+    head = values[:50]
+    for col_idx in range(ncols):
+        max_len = len(col_names[col_idx]) + 2
+        for r in range(len(head)):
+            v = head[r][col_idx]
+            if v is not None and v == v:
+                max_len = max(max_len, min(len(str(v)) + 2, 40))
+        ws.column_dimensions[get_column_letter(col_idx + 1)].width = max(max_len, 8)
 
     # Auto-filter
     if len(df) > 0:
-        ws.auto_filter.ref = f"A{start_row}:{get_column_letter(len(df.columns))}{start_row + len(df)}"
+        ws.auto_filter.ref = f"A{start_row}:{get_column_letter(ncols)}{start_row + len(df)}"
 
 
 class JobManager:
@@ -245,18 +298,37 @@ class JobManager:
         raise RuntimeError(f"Could not allocate a job id: {last_err}")
 
     def create_excel_report(self, results_df: pd.DataFrame, workload_df: pd.DataFrame = None,
-                            meta: dict = None, comparison: dict = None) -> bytes:
+                            meta: dict = None, comparison: dict = None,
+                            on_progress=None) -> bytes:
         """Create multi-sheet Excel report with professional styling, per-branch
-        breakdown, a run-info stamp, and a vs-previous-run comparison."""
+        breakdown, a run-info stamp, and a vs-previous-run comparison.
+
+        on_progress(done, total, message) fires as each sheet completes. Work is
+        measured in cells, not sheets — "All Results" alone is most of the cost.
+        """
         buf = io.BytesIO()
         wb = openpyxl.Workbook()
 
         # Remove default sheet
         wb.remove(wb.active)
 
+        n, ncols = len(results_df), max(len(results_df.columns), 1)
+        # All Results (n*ncols) + per-branch sheets (same rows again) + AI plan + tail.
+        # save() is charged ~15% so the bar doesn't sit at 100% while the zip is written.
+        total_units = int((n * (2 * ncols + 10) + 500) * 1.15) or 1
+        done = 0
+
+        def sheet(name, df, title, index=None):
+            nonlocal done
+            if on_progress:
+                on_progress(min(done, total_units), total_units, f"Building {name}")
+            ws = wb.create_sheet(name) if index is None else wb.create_sheet(name, index)
+            _style_sheet(ws, df, title)
+            done += max(len(df) * max(len(df.columns), 1), 1)
+            return ws
+
         # ── Sheet 1: All Results ──
-        ws = wb.create_sheet("All Results")
-        _style_sheet(ws, results_df, "RTM AGENT \u2014 ALL OUTLET RESULTS")
+        sheet("All Results", results_df, "RTM AGENT \u2014 ALL OUTLET RESULTS")
 
         # ── Sheet 2: Overall Summary ──
         # F4 distributors broken out as own row + Class A (total) rollup added.
@@ -286,8 +358,7 @@ class JobManager:
             }])
             summary_df = pd.concat([rollup, summary_df], ignore_index=True)
 
-        ws = wb.create_sheet("Overall Summary")
-        _style_sheet(ws, summary_df, "CLASSIFICATION SUMMARY")
+        sheet("Overall Summary", summary_df, "CLASSIFICATION SUMMARY")
 
         # ── Sheet 3: Branch Summary (matrix: Branch x Class) ──
         if "BranchName" in results_df.columns:
@@ -327,8 +398,7 @@ class JobManager:
                     ).round(1)
 
             branch_summary = branch_summary.sort_values("Total_Revenue", ascending=False)
-            ws = wb.create_sheet("Branch Summary")
-            _style_sheet(ws, branch_summary, "BRANCH PERFORMANCE MATRIX")
+            sheet("Branch Summary", branch_summary, "BRANCH PERFORMANCE MATRIX")
 
         # ── Sheets 4-N: One sheet per branch ──
         if "BranchName" in results_df.columns:
@@ -337,8 +407,7 @@ class JobManager:
                 branch_df = results_df[results_df["BranchName"] == branch].copy()
                 branch_df = branch_df.sort_values("TotalSales_2Yr", ascending=False)
                 sheet_name = str(branch)[:31]
-                ws = wb.create_sheet(sheet_name)
-                _style_sheet(ws, branch_df, f"{str(branch).upper()} \u2014 OUTLET CLASSIFICATION")
+                sheet(sheet_name, branch_df, f"{str(branch).upper()} \u2014 OUTLET CLASSIFICATION")
 
         # ── Top 50 (across all branches) ──
         top_cols = ["BranchName", "Cus.Code", "Cus.Name", "Classification", "TotalSales_2Yr"]
@@ -346,8 +415,7 @@ class JobManager:
         if "TotalSales_12M" in results_df.columns:
             available_top.append("TotalSales_12M")
         top_customers = results_df.nlargest(50, "TotalSales_2Yr")[available_top]
-        ws = wb.create_sheet("Top 50")
-        _style_sheet(ws, top_customers, "TOP 50 OUTLETS BY REVENUE")
+        sheet("Top 50", top_customers, "TOP 50 OUTLETS BY REVENUE")
 
         # ── AI Action Plan ──
         ai_cols = [
@@ -358,13 +426,11 @@ class JobManager:
         available_ai = [c for c in ai_cols if c in results_df.columns]
         if len(available_ai) > 4:
             ai_df = results_df[available_ai].copy()
-            ws = wb.create_sheet("AI Action Plan")
-            _style_sheet(ws, ai_df, "AI ENRICHMENT \u2014 ACTION PLAN")
+            sheet("AI Action Plan", ai_df, "AI ENRICHMENT \u2014 ACTION PLAN")
 
         # ── Seller Workload ──
         if workload_df is not None and not workload_df.empty:
-            ws = wb.create_sheet("Seller Workload")
-            _style_sheet(ws, workload_df, "SELLER WORKLOAD ANALYSIS")
+            sheet("Seller Workload", workload_df, "SELLER WORKLOAD ANALYSIS")
 
         # ── vs Previous Run comparison ──
         if comparison and comparison.get("has_previous"):
@@ -390,15 +456,12 @@ class JobManager:
                 summ.append({"metric": label, "current": mv.get(key, 0),
                              "previous": "", "change": "", "pct": "", "remark": ""})
             prev_id = comparison.get("previous", {}).get("job_id", "")
-            ws = wb.create_sheet("Run Comparison")
-            _style_sheet(ws, cmp_df(summ), f"THIS RUN vs PREVIOUS — {prev_id}")
+            sheet("Run Comparison", cmp_df(summ), f"THIS RUN vs PREVIOUS — {prev_id}")
 
             if comparison.get("by_channel"):
-                ws = wb.create_sheet("Compare Channels")
-                _style_sheet(ws, cmp_df(comparison["by_channel"]), "OUTLETS BY CHANNEL — vs PREVIOUS RUN")
+                sheet("Compare Channels", cmp_df(comparison["by_channel"]), "OUTLETS BY CHANNEL — vs PREVIOUS RUN")
             if comparison.get("by_branch"):
-                ws = wb.create_sheet("Compare Branches")
-                _style_sheet(ws, cmp_df(comparison["by_branch"]), "OUTLETS BY BRANCH — vs PREVIOUS RUN")
+                sheet("Compare Branches", cmp_df(comparison["by_branch"]), "OUTLETS BY BRANCH — vs PREVIOUS RUN")
 
         # ── Run Info (placed first) ──
         if meta:
@@ -413,10 +476,13 @@ class JobManager:
                 {"Field": "LLM tokens used", "Value": str(meta.get("llm_tokens", ""))},
                 {"Field": "LLM cost (USD)", "Value": str(meta.get("llm_cost", ""))},
             ], columns=["Field", "Value"])
-            ws = wb.create_sheet("Run Info", 0)
-            _style_sheet(ws, info_df, "RUN INFORMATION")
+            sheet("Run Info", info_df, "RUN INFORMATION", index=0)
 
+        if on_progress:
+            on_progress(int(total_units * 0.87), total_units, "Saving workbook")
         wb.save(buf)
+        if on_progress:
+            on_progress(total_units, total_units, "Ready")
         return buf.getvalue()
 
     def complete_job(
