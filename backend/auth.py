@@ -1,11 +1,66 @@
-import os, hashlib, json
+import os, hashlib, json, secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from pathlib import Path
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "rtm-command-center-secret-change-in-prod")
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_MINUTES = 480  # 8 hours
+
+# Where the auto-generated signing key is kept. Lives under data/, which every
+# deploy mounts as a volume, so the key survives restarts and re-creates.
+SECRET_FILE = Path(
+    os.getenv("JWT_SECRET_FILE", Path(__file__).parent.parent / "data" / ".jwt_secret")
+)
+
+
+def _load_or_create_secret() -> str:
+    """Resolve the JWT signing key, generating one on first boot.
+
+    There used to be a hardcoded fallback here, which meant any deploy that
+    forgot to set JWT_SECRET_KEY signed tokens with a string published in the
+    repo — trivially forgeable super_admin tokens. It is gone.
+
+    Two constraints shape this:
+      - We run 4 uvicorn workers. A key generated per-process would differ per
+        worker, so a token signed by one would be rejected by the other three.
+        The key must therefore be shared, i.e. persisted.
+      - Regenerating on every boot would sign every user out on each restart.
+
+    So: generate once, persist, and let all workers read the same file. The
+    O_CREAT|O_EXCL create is atomic — on first boot all 4 workers race, exactly
+    one wins, and the losers read what the winner wrote.
+    """
+    env = os.getenv("JWT_SECRET_KEY")
+    if env:
+        return env  # an explicit key always wins
+
+    if SECRET_FILE.exists():
+        existing = SECRET_FILE.read_text().strip()
+        if existing:
+            return existing
+
+    new_secret = secrets.token_urlsafe(64)
+    try:
+        SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(SECRET_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(new_secret)
+        print(f"[auth] generated a new JWT signing key -> {SECRET_FILE}")
+        return new_secret
+    except FileExistsError:
+        # Another worker created it between our exists() check and the open().
+        return SECRET_FILE.read_text().strip()
+    except OSError as e:
+        # Read-only or unwritable data dir. Do not fall back to a fixed string —
+        # a per-process key breaks 4-worker auth loudly, which is far safer than
+        # silently signing with a guessable secret.
+        raise RuntimeError(
+            f"Cannot persist a JWT signing key at {SECRET_FILE} ({e}). "
+            "Mount a writable data volume, or set JWT_SECRET_KEY explicitly."
+        ) from e
+
+
+SECRET_KEY = _load_or_create_secret()
 
 # Simple user store in a JSON file
 USERS_FILE = Path(__file__).parent.parent / "data" / "users.json"
