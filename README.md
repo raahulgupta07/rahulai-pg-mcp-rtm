@@ -50,6 +50,11 @@ Built for P&G Myanmar market data — 11,000+ outlets, 9 branches.
 
 ## Quick Start
 
+> **Installing or upgrading a real deployment? → [INSTALL.md](INSTALL.md)**
+> Covers fresh install, in-place upgrade (data is preserved), the one-time JWT key
+> rotation, sizing (**≥4 GB RAM** — a 743k-row Excel peaks at 1.3 GB), the
+> single-replica constraint, and a pre-production security checklist.
+
 ### Option 1 — Bundled single image (Open WebUI-style — one container)
 Postgres + pgvector + app all in one image. No compose needed.
 
@@ -231,15 +236,21 @@ Volume migrates straight across — same Postgres data dir.
 
 ```env
 DATABASE_URL=postgresql://rtm:rtm@postgres:5432/rtm
-OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_API_KEY=sk-or-v1-...   # optional — rule-based fallback if unset
 LLM_MODEL=google/gemini-3.1-flash-lite-preview
 LLM_BASE_URL=https://openrouter.ai/api/v1
-JWT_SECRET_KEY=change-in-production
+# JWT_SECRET_KEY=                 # OPTIONAL — see below. Leave unset.
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=admin123
+ADMIN_PASSWORD=admin123           # ← CHANGE before first boot (read once, at user-store creation)
 ADMIN_DISPLAY_NAME=Administrator
-RTM_HOST_PORT=8011               # host port for docker-compose (→ container 8001)
+RTM_HOST_PORT=8011                # host port for docker-compose (→ container 8001)
 ```
+
+**`JWT_SECRET_KEY` is optional and should normally be left unset.** On first boot the
+app generates a strong random key and persists it to `data/.jwt_secret` (gitignored,
+`0600`, survives restarts, shared by all 4 uvicorn workers). Set it explicitly only if
+you manage secrets elsewhere — or if you ever run **more than one replica**, where every
+instance must share the same key. Rotating it invalidates all existing sessions.
 
 ## Data Persistence
 
