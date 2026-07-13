@@ -13,6 +13,8 @@ outputs/*.xlsx
 
 # Environment
 .env
+.env.*
+!.env.example
 .jwt_secret
 
 # OS
