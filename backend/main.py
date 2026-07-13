@@ -8,6 +8,7 @@ import sys
 import os
 import io
 import json
+import time
 import asyncio
 
 # Add project root so we can import from src/
@@ -38,6 +39,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "/app/uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+EXPORT_DIR = Path(os.environ.get("EXPORT_DIR", "/app/outputs"))
+EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 from src.rtm_classifier import RTMClassifier
 from src.database import get_database
@@ -1095,11 +1098,17 @@ async def _run_classify_pipeline(
 async def classify(
     upload_id: str = Query(None, description="Use prior /api/upload result"),
     file: UploadFile = File(None),
-    threshold_a: int = Query(80, ge=50, le=95),
-    threshold_b: int = Query(95, ge=55, le=99),
     user: dict = Depends(require_auth),
 ):
-    result = await _run_classify_pipeline(upload_id, file, threshold_a, threshold_b, user)
+    """Sync classify (back-compat). Cutoffs come from the active rule config —
+    see the note on /api/classify-async."""
+    pareto = load_rule_config().get("pareto", {})
+    result = await _run_classify_pipeline(
+        upload_id, file,
+        int(pareto.get("class_a_cutoff", 80)),
+        int(pareto.get("class_b_cutoff", 95)),
+        user,
+    )
     return JSONResponse(content=result)
 
 
@@ -1107,14 +1116,23 @@ async def classify(
 @app.post("/api/classify-async")
 async def classify_async(
     upload_id: str = Query(None),
-    threshold_a: int = Query(80, ge=50, le=95),
-    threshold_b: int = Query(95, ge=55, le=99),
     user: dict = Depends(require_auth),
 ):
+    """Classify using the ACTIVE rule config.
+
+    The old threshold_a/threshold_b query params were a lie: the classifier has
+    always run on load_rule_config() (see _run_classify_pipeline), so a caller
+    passing 70 got an 80% run whose job row then claimed 70. The cutoffs stamped
+    on the job now come from the same config the engine uses.
+    """
     if not upload_id:
         raise HTTPException(status_code=400, detail="upload_id required for async classify")
     if not _find_upload(upload_id):
         raise HTTPException(status_code=404, detail=f"upload_id {upload_id} not found")
+
+    pareto = load_rule_config().get("pareto", {})
+    threshold_a = int(pareto.get("class_a_cutoff", 80))
+    threshold_b = int(pareto.get("class_b_cutoff", 95))
 
     job_manager = get_job_manager()
     job_id = job_manager.start_job(
@@ -1303,6 +1321,193 @@ async def export_job(job_id: str, user: dict = Depends(require_auth)):
         io.BytesIO(excel_bytes),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={job_id}.xlsx"},
+    )
+
+
+# ── Async Excel export — build in the background, poll for %, then download ──
+# The workbook takes ~11s on an 11k-outlet job, so a plain GET gives the user a
+# dead button. Mirrors the classify-async pattern: progress lives in Postgres so
+# any uvicorn worker can answer the poll.
+
+@app.get("/api/uploads/{upload_id}/preview")
+def preview_upload(upload_id: str, rows: int = Query(200, ge=1, le=2000),
+                   user: dict = Depends(require_auth)):
+    """Preview a staged file server-side.
+
+    The browser cannot do this for large workbooks: a big .xlsx holds one giant
+    sheet XML (799 MB uncompressed in a real case) and SheetJS must materialise
+    it as a single JS string, blowing past V8's ~512 MB string cap. openpyxl's
+    read_only mode streams the same sheet in ~0.2s, so the server previews it.
+    """
+    path = _find_upload(upload_id)
+    if not path:
+        raise HTTPException(status_code=404, detail=f"upload_id {upload_id} not found")
+
+    headers: list = []
+    sample: list = []
+    total_rows = 0
+    sheet_names: list = []
+
+    if path.suffix.lower() in (".xlsx", ".xls"):
+        import openpyxl
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        try:
+            sheet_names = list(wb.sheetnames)
+            ws = wb[sheet_names[0]]
+            total_rows = max((ws.max_row or 1) - 1, 0)   # minus header
+            for i, row in enumerate(ws.iter_rows(max_row=rows + 1, values_only=True)):
+                vals = ["" if v is None else str(v) for v in row]
+                if i == 0:
+                    headers = [h.strip() for h in vals]
+                else:
+                    sample.append(vals)
+        finally:
+            wb.close()
+    else:
+        # CSV — read only the first N rows, never the whole file
+        import csv as _csv
+        for enc in ("utf-8", "latin-1", "cp1252"):
+            try:
+                with open(path, newline="", encoding=enc) as fh:
+                    r = _csv.reader(fh)
+                    for i, row in enumerate(r):
+                        if i == 0:
+                            headers = [c.strip() for c in row]
+                        elif i <= rows:
+                            sample.append(row)
+                        else:
+                            break
+                break
+            except UnicodeDecodeError:
+                headers, sample = [], []
+                continue
+        # Row count without holding the file in memory
+        with open(path, "rb") as fh:
+            total_rows = max(sum(1 for _ in fh) - 1, 0)
+
+    return JSONResponse(content={
+        "headers": headers,
+        "rows": sample,
+        "total_rows": total_rows,
+        "parsed_rows": len(sample),
+        "sheet_names": sheet_names,
+        "filename": path.name.split("_", 1)[-1],
+    })
+
+
+def _prune_old_exports(max_age_hours: int = 24):
+    """Each export writes a ~12 MB workbook. Drop the ones nobody came back for."""
+    cutoff = time.time() - max_age_hours * 3600
+    try:
+        for f in EXPORT_DIR.glob("*.xlsx"):
+            if len(f.stem) == 32 and f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+    except Exception:
+        pass  # housekeeping must never break an export
+
+
+def _get_own_export(export_id: str, user: dict) -> dict:
+    """Fetch an export, 404ing unless this user started it (or is admin+)."""
+    if not re.fullmatch(r"[a-f0-9]{32}", export_id or ""):
+        raise HTTPException(status_code=404, detail="Export not found")
+    exp = get_database().get_export(export_id)
+    if not exp:
+        raise HTTPException(status_code=404, detail="Export not found")
+    if not _can_see_all_jobs(user) and exp.get("username") != user["username"]:
+        raise HTTPException(status_code=404, detail="Export not found")
+    return exp
+
+
+@app.post("/api/jobs/{job_id}/export-async")
+async def export_job_async(job_id: str, body: dict = None, user: dict = Depends(require_auth)):
+    """Build the workbook in the background.
+
+    An optional {"cus_codes": [...]} body exports only those outlets, so the
+    Export tab can honour whatever the user filtered the page down to.
+    """
+    db = get_database()
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if not _job_visible(user, job, set(db.get_shared_job_ids(user["user_id"]))):
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    codes = (body or {}).get("cus_codes") or None
+    if codes is not None:
+        codes = {str(c) for c in codes}
+
+    export_id = uuid.uuid4().hex
+    db.create_export(export_id, job_id, user["username"])
+
+    async def _bg():
+        try:
+            await run_in_threadpool(_prune_old_exports)
+            results_df = await run_in_threadpool(db.get_job_results, job_id)
+            if results_df.empty:
+                db.fail_export(export_id, f"No results found for job {job_id}")
+                return
+            results_df = results_df.rename(
+                columns={"Cus_Code": "Cus.Code", "Cus_Name": "Cus.Name"}
+            )
+            if codes is not None:
+                results_df = results_df[results_df["Cus.Code"].astype(str).isin(codes)]
+                if results_df.empty:
+                    db.fail_export(export_id, "No outlets match the current filters")
+                    return
+            meta = build_job_meta(job)
+            comparison = await run_in_threadpool(compute_run_comparison, job_id)
+
+            def _build():
+                return get_job_manager().create_excel_report(
+                    results_df, None, meta, comparison,
+                    on_progress=lambda d, t, m: db.update_export_progress(export_id, d, t, m),
+                )
+
+            excel_bytes = await run_in_threadpool(_build)
+
+            path = EXPORT_DIR / f"{export_id}.xlsx"
+            await run_in_threadpool(path.write_bytes, excel_bytes)
+            db.complete_export(export_id, str(path), len(excel_bytes))
+            db.log_action(user["username"], "EXPORT", f"Downloaded Excel for {job_id}")
+        except Exception as e:
+            db.fail_export(export_id, str(e))
+
+    asyncio.create_task(_bg())
+    return {"export_id": export_id, "job_id": job_id}
+
+
+@app.get("/api/exports/{export_id}/status")
+async def export_status(export_id: str, user: dict = Depends(require_auth)):
+    exp = _get_own_export(export_id, user)
+    total = max(int(exp.get("total") or 1), 1)
+    step = min(int(exp.get("step") or 0), total)
+    return {
+        "status": exp.get("status"),
+        "step": step,
+        "total": total,
+        "percent": round(step / total * 100),
+        "message": exp.get("message") or "",
+        "size_bytes": int(exp.get("size_bytes") or 0),
+        "ready": exp.get("status") == "ready",
+        "error": exp.get("error_message"),
+    }
+
+
+@app.get("/api/exports/{export_id}/download")
+async def export_download(export_id: str, user: dict = Depends(require_auth)):
+    exp = _get_own_export(export_id, user)
+    if exp.get("status") != "ready":
+        raise HTTPException(status_code=409, detail="Export is not ready yet")
+
+    path = Path(exp["file_path"])
+    if not path.is_file():
+        raise HTTPException(status_code=410, detail="Export file has expired — rebuild it")
+
+    # FileResponse sets Content-Length, so the browser gets a real download %.
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=f"{exp['job_id']}.xlsx",
     )
 
 

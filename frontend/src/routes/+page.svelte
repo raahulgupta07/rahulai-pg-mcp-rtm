@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { classify, classifyAsync, getJobStatus, getJobResult, exportExcel, getJob, getJobComparison, getSettings, uploadFile, deleteUpload, getF4Analysis } from '$lib/api';
+  import { classify, classifyAsync, getJobStatus, getJobResult, exportExcel, exportExcelWithProgress, getJob, getJobComparison, getRuleConfig, getUploadPreview, uploadFile, deleteUpload, getF4Analysis } from '$lib/api';
   import { page } from '$app/stores';
   import KpiCard from '$lib/components/KpiCard.svelte';
   import DataTable from '$lib/components/DataTable.svelte';
   import Badge from '$lib/components/Badge.svelte';
+  import MultiSelect from '$lib/components/MultiSelect.svelte';
   import ChapterHeading from '$lib/components/ChapterHeading.svelte';
 
   let state = $state('upload');
@@ -72,21 +73,70 @@
       .map(([name, count]) => ({ name, count: Math.round(count * scale) }))
       .sort((a, b) => b.count - a.count);
 
+    // Columns the engine doesn't know about are silently dropped on the backend,
+    // so a typo'd header (Cus_Code vs Cus.Code) fails quietly. Surface them.
+    const known = new Set([...REQUIRED_COLS, ...OPTIONAL_COLS]);
+    const unknownCols = headers.filter(h => h && !known.has(h));
+
     preview = {
       headers,
-      rows: dataRows.slice(0, 10),
+      rows: dataRows,                       // every parsed row — the table pages through these
+      parsedRows: dataRows.length,          // what we actually hold (< totalRows if sampled)
       totalRows: Math.round(dataRows.length * scale),
       branches,
       outletCount: Math.round(outletSet.size * scale),
       dateRange: minDate && maxDate ? (minDate === maxDate ? minDate : `${minDate} → ${maxDate}`) : '—',
       requiredMissing: REQUIRED_COLS.filter(c => !headers.includes(c)),
       optionalPresent: OPTIONAL_COLS.filter(c => headers.includes(c)),
+      unknownCols,
       sampled,
     };
+    previewPage = 0;
+    previewSearch = '';
   }
+
+  // ── Preview table: search + paging over the parsed rows ──
+  let previewParsing = $state(false);
+  let previewError = $state('');
+  let sheetWarning = $state('');
+  let previewFallback = $state(false);   // preview came from the server
+  let previewUploading = $state(false);
+  let previewUploadPct = $state(0);
+  let previewUploadId = $state('');      // staged upload, reused by handleClassify
+  let previewPage = $state(0);
+  let previewSearch = $state('');
+  const PREVIEW_PAGE_SIZE = 25;
+
+  let previewRows = $derived.by(() => {
+    const rows = preview?.rows ?? [];
+    const q = previewSearch.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter(r => r.some(c => String(c ?? '').toLowerCase().includes(q)));
+  });
+
+  let previewPageCount = $derived(Math.max(1, Math.ceil(previewRows.length / PREVIEW_PAGE_SIZE)));
+  let previewPageRows = $derived(
+    previewRows.slice(previewPage * PREVIEW_PAGE_SIZE, previewPage * PREVIEW_PAGE_SIZE + PREVIEW_PAGE_SIZE)
+  );
+
+  // A new search can leave us past the end
+  $effect(() => {
+    if (previewPage >= previewPageCount) previewPage = 0;
+  });
+
+  // Cap on rows parsed from a workbook. A 100 MB+ .xlsx decompresses to a huge
+  // XML sheet; reading it whole locks the tab (or OOMs) and the preview never
+  // appears. SheetJS's sheetRows stops early, and !fullref still reports the
+  // real dimensions — so the counts stay honest.
+  const EXCEL_ROW_CAP = 20000;
 
   async function buildPreview(f: File) {
     preview = null;
+    previewError = '';
+    sheetWarning = '';
+    previewFallback = false;
+    previewUploadId = '';
+    previewParsing = true;
     const isExcel = /\.xlsx?$/i.test(f.name);
     try {
       if (isExcel) {
@@ -94,14 +144,55 @@
         // initial bundle light — only pulled in when an Excel file is picked.
         const XLSX = await import('xlsx');
         const buf = await f.arrayBuffer();
-        const wb = XLSX.read(buf, { type: 'array' });
-        const ws = wb.Sheets[wb.SheetNames[0]];
+        const wb = XLSX.read(buf, {
+          type: 'array',
+          dense: true,             // far less memory on wide/long sheets
+          sheetRows: EXCEL_ROW_CAP + 1,   // + header
+          cellDates: false,
+          cellStyles: false,
+          cellFormula: false,
+        });
+        // Sheet 0 isn't always a worksheet — it can be a chart/macro sheet, or
+        // just empty. Find the first sheet that actually holds cells.
+        const names: string[] = wb.SheetNames ?? [];
+        if (!names.length) throw new Error('the workbook contains no sheets at all');
+
+        const sheetIdx = names.findIndex(n => {
+          const s = wb.Sheets[n];
+          return s && (s as any)['!ref'];
+        });
+        if (sheetIdx < 0) {
+          throw new Error(`no sheet contains any data (sheets: ${names.join(', ')})`);
+        }
+        const sheetName = names[sheetIdx];
+        const ws = wb.Sheets[sheetName];
+
         // header:1 → array-of-arrays; defval keeps blank cells aligned.
         const grid = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, defval: '', raw: false });
-        if (grid.length < 2) return;
+        if (grid.length < 2) throw new Error(`sheet "${sheetName}" has no data rows`);
         const headers = (grid[0] as any[]).map(c => String(c ?? '').trim());
         const dataRows = (grid.slice(1) as any[][]).map(r => r.map(c => String(c ?? '')));
-        finalizePreview(headers, dataRows, 1, false);
+
+        // The backend reads the FIRST sheet (pd.read_excel with no sheet_name).
+        // If the data isn't on sheet 1, the run will not see what this preview shows.
+        sheetWarning = sheetIdx > 0
+          ? `Data found on sheet "${sheetName}" (sheet ${sheetIdx + 1} of ${names.length}). `
+            + `The classifier reads the FIRST sheet ("${names[0]}") — move the data there, or the run will not match this preview.`
+          : '';
+
+        // When sheetRows truncates, !fullref holds the sheet's true range —
+        // use it so the row/outlet counts reflect the whole file, not the slice.
+        let scale = 1;
+        let sampled = false;
+        const fullref = (ws as any)['!fullref'];
+        if (fullref) {
+          const totalRows = XLSX.utils.decode_range(fullref).e.r; // 0-based end row = data rows (header at 0)
+          if (totalRows > dataRows.length) {
+            scale = totalRows / dataRows.length;
+            sampled = true;
+          }
+        }
+        finalizePreview(headers, dataRows, scale, sampled);
         return;
       }
 
@@ -126,41 +217,96 @@
       // If sliced, drop last partial line
       const allLines = text.split(/\r?\n/);
       const lines = isSliced ? allLines.slice(0, -1).filter(l => l.length > 0) : allLines.filter(l => l.length > 0);
-      if (lines.length < 2) return;
+      if (lines.length < 2) throw new Error('the file has no data rows');
       const headers = parseCsvLine(lines[0]);
       const dataRows = lines.slice(1).map(parseCsvLine);
       // Estimate total rows from full file size if sliced
       const scale = isSliced ? f.size / SLICE : 1;
       finalizePreview(headers, dataRows, scale, isSliced);
-    } catch (e) {
-      console.warn('preview parse failed', e);
-      fileError = isExcel
-        ? 'Could not parse Excel preview — file may be corrupted or not a valid .xlsx'
-        : 'Could not parse CSV preview — file may be corrupted or wrong encoding';
+    } catch (e: any) {
+      // The browser gave up. Big workbooks hold one enormous sheet XML that
+      // SheetJS must materialise as a single JS string — past ~512 MB that is
+      // impossible in V8, no matter the row cap. The server streams it fine,
+      // so stage the file and let the backend build the preview.
+      await serverPreview(f, e?.message);
+    } finally {
+      previewParsing = false;
     }
   }
-  let thresholdA = $state(80);
-  let thresholdB = $state(95);
+
+  // Preview by staging the file and reading it on the server. The upload is
+  // needed for the classification anyway, so it is not wasted work — handleClassify
+  // reuses this upload_id instead of sending the file twice.
+  async function serverPreview(f: File, clientReason?: string) {
+    try {
+      previewFallback = true;
+      previewUploading = true;
+      previewUploadPct = 0;
+      const up = await uploadFile(f, (pct) => { previewUploadPct = pct; });
+      previewUploading = false;
+      previewUploadId = up.upload_id;
+
+      const p = await getUploadPreview(up.upload_id, 200);
+      const headers = p.headers ?? [];
+      const known = new Set([...REQUIRED_COLS, ...OPTIONAL_COLS]);
+
+      preview = {
+        headers,
+        rows: p.rows ?? [],
+        parsedRows: p.parsed_rows ?? 0,
+        totalRows: p.total_rows ?? 0,
+        branches: [],
+        outletCount: null,
+        dateRange: '',
+        requiredMissing: REQUIRED_COLS.filter(c => !headers.includes(c)),
+        optionalPresent: OPTIONAL_COLS.filter(c => headers.includes(c)),
+        unknownCols: headers.filter(h => h && !known.has(h)),
+        sampled: (p.total_rows ?? 0) > (p.parsed_rows ?? 0),
+        serverSide: true,
+        sheetNames: p.sheet_names ?? [],
+      };
+      previewPage = 0;
+      previewSearch = '';
+      previewError = '';
+    } catch (err: any) {
+      previewUploading = false;
+      previewFallback = false;
+      previewError = `Could not read this file: ${clientReason ?? ''}`.trim()
+        + ` — and the server preview also failed (${err?.message ?? 'unknown error'}).`;
+    }
+  }
   let data = $state(null);
+  let exporting = $state(false);
+  let exportError = $state('');
+  let exportPct = $state(0);
+  let exportPhase = $state('building');
+  let exportMsg = $state('');
+  let exportFiltered = $state(true);
   let comparison = $state(null);
   let error = $state('');
   let logEntries = $state([]);
-  let selectedBranch = $state('All Branches');
-
-  // Persist branch filter to localStorage
+  // Persist the branch filter to localStorage
   $effect(() => {
-    if (selectedBranch && typeof window !== 'undefined') {
-      localStorage.setItem('rtm_branch_filter', selectedBranch);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('rtm_branch_filter', JSON.stringify(fBranch));
     }
   });
 
-  // Restore branch filter from localStorage after data is loaded
+  // Restore it once the data (and so the branch list) is loaded
+  let branchRestored = false;
   $effect(() => {
-    if (typeof window !== 'undefined' && state === 'results' && branches.length > 0) {
-      const saved = localStorage.getItem('rtm_branch_filter');
-      if (saved && saved !== 'All Branches' && branches.includes(saved)) {
-        selectedBranch = saved;
-      }
+    if (branchRestored || typeof window === 'undefined') return;
+    if (state !== 'results' || branches.length === 0) return;
+    branchRestored = true;
+    const raw = localStorage.getItem('rtm_branch_filter');
+    if (!raw) return;
+    try {
+      // Older builds stored a single branch name, not an array
+      const saved = raw.startsWith('[') ? JSON.parse(raw) : [raw];
+      const valid = saved.filter(b => branches.includes(b));
+      if (valid.length) fBranch = valid;
+    } catch {
+      /* corrupt value — ignore and start unfiltered */
     }
   });
 
@@ -268,12 +414,10 @@
     }
   }
 
-  // Load default thresholds from settings
+  // Show the rules the engine will actually use (it always runs on the /rules config)
+  let ruleCfg = $state(null);
   $effect(() => {
-    getSettings().then(s => {
-      thresholdA = s.default_threshold_a || 80;
-      thresholdB = s.default_threshold_b || 95;
-    }).catch(() => {});
+    getRuleConfig().then(c => { ruleCfg = c; }).catch(() => {});
   });
 
   async function loadJob(jobId: string) {
@@ -314,16 +458,134 @@
     }
   }
 
-  // Filtered results based on branch selection
-  let filteredResults = $derived(
-    data && selectedBranch !== 'All Branches'
-      ? data.results.filter(r => r.BranchName === selectedBranch)
-      : data?.results ?? []
+  // ── Filters ──────────────────────────────────────────────────────────────
+  // Every KPI card and every tab reads filteredResults, so this is the single
+  // place that decides what the page is showing.
+  // Each filter is a list of accepted values. Empty list = "All" — it never narrows.
+  const ALL = 'All';
+  let fBranch = $state([]);
+  let fClass = $state([]);
+  let fLifecycle = $state([]);
+  let fRisk = $state([]);
+  let fGrowth = $state([]);
+  let fPriority = $state([]);
+  let fCategory = $state([]);
+  let fPrincipal = $state([]);
+  let fTownship = $state([]);
+  let fRoute = $state([]);
+  let fRevMin = $state('');
+  let fRevMax = $state('');
+  let fGrowthMin = $state('');
+  let fGrowthMax = $state('');
+  let fSearch = $state('');
+  let showMore = $state(false);
+
+  const uniq = (rows, key) =>
+    [...new Set(rows.map(r => r[key]).filter(v => v !== null && v !== undefined && v !== '' && String(v) !== 'nan'))]
+      .sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
+
+  let branches = $derived(data ? uniq(data.results, 'BranchName') : []);
+  let classes = $derived(data ? uniq(data.results, 'Classification') : []);
+  let lifecycles = $derived(data ? uniq(data.results, 'Lifecycle_Stage') : []);
+  let risks = $derived(data ? uniq(data.results, 'AI_Risk_Level') : []);
+  let growths = $derived(data ? uniq(data.results, 'AI_Growth_Signal') : []);
+  let priorities = $derived(data ? uniq(data.results, 'AI_Visit_Priority') : []);
+  let categories = $derived(data ? uniq(data.results, 'SalesGroup') : []);
+  let principals = $derived(data ? uniq(data.results, 'Principal') : []);
+  let townships = $derived(data ? uniq(data.results, 'Township') : []);
+  let routes = $derived(data ? uniq(data.results, 'RouteCode') : []);
+
+  const num = (v) => {
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  // Within one filter the selected values are OR'd; across filters they are AND'd.
+  const pick = (rows, sel, key) =>
+    sel.length ? rows.filter(r => sel.includes(r[key])) : rows;
+
+  let filteredResults = $derived.by(() => {
+    let rows = data?.results ?? [];
+    rows = pick(rows, fBranch, 'BranchName');
+    rows = pick(rows, fClass, 'Classification');
+    rows = pick(rows, fLifecycle, 'Lifecycle_Stage');
+    rows = pick(rows, fRisk, 'AI_Risk_Level');
+    rows = pick(rows, fGrowth, 'AI_Growth_Signal');
+    rows = pick(rows, fCategory, 'SalesGroup');
+    rows = pick(rows, fPrincipal, 'Principal');
+    rows = pick(rows, fTownship, 'Township');
+    rows = pick(rows, fRoute, 'RouteCode');
+    if (fPriority.length) {
+      const want = fPriority.map(String);
+      rows = rows.filter(r => want.includes(String(r.AI_Visit_Priority)));
+    }
+
+    const rmin = num(fRevMin), rmax = num(fRevMax);
+    if (rmin !== null) rows = rows.filter(r => (r.TotalSales_2Yr ?? 0) >= rmin);
+    if (rmax !== null) rows = rows.filter(r => (r.TotalSales_2Yr ?? 0) <= rmax);
+
+    const gmin = num(fGrowthMin), gmax = num(fGrowthMax);
+    if (gmin !== null) rows = rows.filter(r => (r.Growth_6M_vs_12M ?? 0) >= gmin);
+    if (gmax !== null) rows = rows.filter(r => (r.Growth_6M_vs_12M ?? 0) <= gmax);
+
+    const q = fSearch.trim().toLowerCase();
+    if (q) {
+      rows = rows.filter(r =>
+        String(r['Cus.Code'] ?? '').toLowerCase().includes(q) ||
+        String(r['Cus.Name'] ?? '').toLowerCase().includes(q)
+      );
+    }
+    return rows;
+  });
+
+  // Active filters, as individually removable chips — one chip per selected value
+  let activeChips = $derived.by(() => {
+    const c = [];
+    const add = (prefix, sel, drop) => {
+      for (const v of sel) {
+        c.push({ label: prefix ? `${prefix}: ${v}` : String(v), clear: () => drop(v) });
+      }
+    };
+    add('', fBranch, v => (fBranch = fBranch.filter(x => x !== v)));
+    add('', fClass, v => (fClass = fClass.filter(x => x !== v)));
+    add('Lifecycle', fLifecycle, v => (fLifecycle = fLifecycle.filter(x => x !== v)));
+    add('Risk', fRisk, v => (fRisk = fRisk.filter(x => x !== v)));
+    add('Growth', fGrowth, v => (fGrowth = fGrowth.filter(x => x !== v)));
+    add('Priority', fPriority, v => (fPriority = fPriority.filter(x => x !== v)));
+    add('', fCategory, v => (fCategory = fCategory.filter(x => x !== v)));
+    add('', fPrincipal, v => (fPrincipal = fPrincipal.filter(x => x !== v)));
+    add('', fTownship, v => (fTownship = fTownship.filter(x => x !== v)));
+    add('Route', fRoute, v => (fRoute = fRoute.filter(x => x !== v)));
+
+    if (num(fRevMin) !== null) c.push({ label: `Rev ≥ ${fmtCompact(num(fRevMin))}`, clear: () => (fRevMin = '') });
+    if (num(fRevMax) !== null) c.push({ label: `Rev ≤ ${fmtCompact(num(fRevMax))}`, clear: () => (fRevMax = '') });
+    if (num(fGrowthMin) !== null) c.push({ label: `Growth ≥ ${fGrowthMin}%`, clear: () => (fGrowthMin = '') });
+    if (num(fGrowthMax) !== null) c.push({ label: `Growth ≤ ${fGrowthMax}%`, clear: () => (fGrowthMax = '') });
+    if (fSearch.trim()) c.push({ label: `"${fSearch.trim()}"`, clear: () => (fSearch = '') });
+    return c;
+  });
+
+  // Count of filters hidden behind the "More" popover
+  let moreCount = $derived(
+    [fGrowth, fPriority, fCategory, fPrincipal, fTownship, fRoute].filter(a => a.length).length
+    + [fRevMin, fRevMax, fGrowthMin, fGrowthMax].filter(v => num(v) !== null).length
+    + (fSearch.trim() ? 1 : 0)
   );
 
-  let branches = $derived(
-    data ? [...new Set(data.results.map(r => r.BranchName))].sort() : []
-  );
+  function clearFilters() {
+    fBranch = []; fClass = []; fLifecycle = []; fRisk = [];
+    fGrowth = []; fPriority = []; fCategory = [];
+    fPrincipal = []; fTownship = []; fRoute = [];
+    fRevMin = fRevMax = fGrowthMin = fGrowthMax = '';
+    fSearch = '';
+  }
+
+  function fmtCompact(n) {
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(0) + 'K';
+    return String(n);
+  }
 
   // KPIs from filtered results
   let kpis = $derived({
@@ -402,17 +664,25 @@
     uploadLoaded = 0;
     uploadTotal = file.size;
     let uploaded;
-    try {
-      uploaded = await uploadFile(file, (pct, loaded, total) => {
-        uploadPct = pct;
-        uploadLoaded = loaded;
-        uploadTotal = total;
-      });
-      uploadId = uploaded.upload_id;
-    } catch (e: any) {
-      error = `Upload failed: ${e.message || e}`;
-      state = 'upload';
-      return;
+    if (previewUploadId) {
+      // The server-side preview already staged this exact file — don't send it twice.
+      uploaded = { upload_id: previewUploadId };
+      uploadId = previewUploadId;
+      uploadPct = 100;
+      uploadLoaded = file.size;
+    } else {
+      try {
+        uploaded = await uploadFile(file, (pct, loaded, total) => {
+          uploadPct = pct;
+          uploadLoaded = loaded;
+          uploadTotal = total;
+        });
+        uploadId = uploaded.upload_id;
+      } catch (e: any) {
+        error = `Upload failed: ${e.message || e}`;
+        state = 'upload';
+        return;
+      }
     }
 
     // ─── Stage 2: classify from staged file ───
@@ -440,7 +710,7 @@
 
     try {
       // Kick off async background job — returns instantly
-      const { job_id } = await classifyAsync(uploaded.upload_id, thresholdA, thresholdB);
+      const { job_id } = await classifyAsync(uploaded.upload_id);
       // Persist job_id so a refresh resumes polling instead of losing state
       try {
         localStorage.setItem('rtm_active_job', job_id);
@@ -537,7 +807,7 @@
     comparison = null;
     error = '';
     logEntries = [];
-    selectedBranch = 'All Branches';
+    clearFilters();
     activeTab = 0;
     searchQuery = '';
     classFilter = 'All';
@@ -689,8 +959,39 @@
 
   // Full-dataset CSV — all rows, all columns (union of keys across rows),
   // RFC-4180 escaping. Mirrors the Excel "All Results" sheet in flat form.
+  async function downloadExcel() {
+    if (!data?.job_id) { exportError = 'No job loaded.'; return; }
+    exporting = true;
+    exportError = '';
+    exportPct = 0;
+    exportPhase = 'building';
+    exportMsg = 'Starting…';
+    try {
+      const codes = exportFiltered && activeChips.length
+        ? filteredResults.map(r => String(r['Cus.Code']))
+        : null;
+      await exportExcelWithProgress(data.job_id, (p) => {
+        exportPhase = p.phase;
+        exportPct = p.percent;
+        exportMsg = p.phase === 'downloading' && p.total
+          ? `Downloading — ${fmtMB(p.loaded)} / ${fmtMB(p.total)} MB`
+          : p.message;
+      }, codes);
+    } catch (e) {
+      exportError = e?.message === 'Session expired'
+        ? 'Session expired — sign in again.'
+        : `Export failed: ${e?.message ?? 'unknown error'}`;
+    } finally {
+      exporting = false;
+    }
+  }
+
+  function fmtMB(bytes) {
+    return ((bytes ?? 0) / 1024 / 1024).toFixed(1);
+  }
+
   function exportFullCSV() {
-    const rows = data?.results ?? [];
+    const rows = exportFiltered && activeChips.length ? filteredResults : (data?.results ?? []);
     if (!rows.length) return;
     const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];
     const esc = (v: any) => {
@@ -704,8 +1005,10 @@
     const a = document.createElement('a');
     a.href = url;
     a.download = `RTM_${data?.job_id ?? 'export'}.csv`;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
 
   // Analytics: Pareto curve
@@ -867,24 +1170,43 @@
         {/if}
       {/if}
 
-      <!-- Threshold sliders -->
-      <div class="threshold-row">
-        <div class="threshold-field">
-          <label class="label" for="threshA">Class A cutoff: {thresholdA}%</label>
-          <input id="threshA" type="range" min="50" max="95" bind:value={thresholdA} class="range range-a" />
+      <!-- Active rules — read-only. The engine always runs on the /rules config,
+           so showing anything editable here would be a lie. -->
+      {#if ruleCfg}
+        <div class="active-rules">
+          <div class="ar-head">
+            <span class="ar-title">Active rules</span>
+            <a class="ar-link" href="/rules">Edit in Rules →</a>
+          </div>
+          <div class="ar-body">
+            <span class="ar-item"><b>Pareto</b> {ruleCfg.pareto?.class_a_cutoff}&thinsp;/&thinsp;{ruleCfg.pareto?.class_b_cutoff}</span>
+            <span class="ar-sep">·</span>
+            <span class="ar-item">
+              <b>F4</b>
+              {#if ruleCfg.wholesaler?.enabled}
+                ≥ {ruleCfg.wholesaler?.cartons_per_brand_month} cartons/brand/month ({ruleCfg.wholesaler?.item_type})
+              {:else}
+                off
+              {/if}
+            </span>
+            <span class="ar-sep">·</span>
+            <span class="ar-item">
+              <b>Category override</b>
+              {ruleCfg.category_override?.enabled ? `≥ ${ruleCfg.category_override?.contribution_cutoff}%` : 'off'}
+            </span>
+          </div>
+          <div class="ar-note">These apply to every run.</div>
         </div>
-        <div class="threshold-field">
-          <label class="label" for="threshB">Class B cutoff: {thresholdB}%</label>
-          <input id="threshB" type="range" min={thresholdA + 1} max="99" bind:value={thresholdB} class="range range-b" />
-        </div>
-      </div>
+      {/if}
 
       <!-- Preview KPI cards -->
-      {#if file}
+      {#if file && ruleCfg}
+        {@const a = ruleCfg.pareto?.class_a_cutoff ?? 80}
+        {@const b = ruleCfg.pareto?.class_b_cutoff ?? 95}
         <div class="preview-kpis">
-          <KpiCard label="Class A" value="{thresholdA}%" subtitle="top revenue" accent="var(--class-a)" />
-          <KpiCard label="Class B" value="{thresholdB - thresholdA}%" subtitle="middle tier" accent="var(--class-b)" />
-          <KpiCard label="Class C" value="{100 - thresholdB}%" subtitle="remaining" accent="var(--class-c)" />
+          <KpiCard label="Class A" value="{a}%" subtitle="top revenue" accent="var(--class-a)" />
+          <KpiCard label="Class B" value="{b - a}%" subtitle="middle tier" accent="var(--class-b)" />
+          <KpiCard label="Class C" value="{100 - b}%" subtitle="remaining" accent="var(--class-c)" />
         </div>
       {/if}
 
@@ -894,21 +1216,64 @@
       </button>
     </div>
 
+    <!-- Preview is still parsing (a big workbook takes a few seconds) -->
+    {#if file && previewParsing}
+      <div class="card preview-panel animate-fade-up">
+        <div class="preview-loading">
+          <span class="spinner"></span>
+          {#if previewUploading}
+            Too large to read in the browser — sending to the server… {previewUploadPct}%
+          {:else}
+            Reading {file.name}…
+          {/if}
+        </div>
+        {#if previewUploading}
+          <div class="export-progress" style="padding: 0 18px 16px;">
+            <div class="export-bar"><div class="export-bar-fill" style="width:{previewUploadPct}%"></div></div>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
+    <!-- Preview could not be built — say so instead of showing nothing -->
+    {#if file && !previewParsing && previewError}
+      <div class="card preview-panel animate-fade-up">
+        <div class="alert alert-danger">{previewError}</div>
+        <div class="preview-foot">
+          You can still run the classification — the server parses the file independently.
+        </div>
+      </div>
+    {/if}
+
     <!-- File Preview Panel -->
     {#if file && preview}
       <div class="card preview-panel animate-fade-up">
         <div class="card-head">
           <div class="card-head-title">File Preview</div>
-          <div class="card-head-sub">{file.name} · {file.size > 1024 * 1024 ? (file.size / 1024 / 1024).toFixed(1) + ' MB' : (file.size / 1024).toFixed(0) + ' KB'}{preview.sampled ? ' · stats estimated from first 8 MB' : ''}</div>
+          <div class="card-head-sub">
+            {file.name} · {file.size > 1024 * 1024 ? (file.size / 1024 / 1024).toFixed(1) + ' MB' : (file.size / 1024).toFixed(0) + ' KB'}
+            {#if preview.serverSide}
+              · read on the server (too large for the browser)
+            {:else if preview.sampled}
+              · sampled — stats scaled from {preview.parsedRows.toLocaleString()} parsed rows
+            {/if}
+          </div>
         </div>
         <div class="preview-body">
-          <!-- KPI strip -->
+          <!-- KPI strip. Branch/outlet/date need a full pass over the file (~40s on a
+               743k-row workbook), so the server path shows only what it knows exactly. -->
           <div class="preview-stats">
             <KpiCard label="Rows" value={preview.totalRows.toLocaleString()} />
-            <KpiCard label="Branches" value={preview.branches.length.toString()} />
-            <KpiCard label="Outlets" value={preview.outletCount.toLocaleString()} />
             <KpiCard label="Columns" value={preview.headers.length.toString()} />
-            <KpiCard label="Date Range" value={preview.dateRange} />
+            {#if preview.serverSide}
+              <KpiCard label="Sheet" value={preview.sheetNames?.[0] ?? '—'} subtitle="first sheet" />
+              <KpiCard label="Outlets" value="—" subtitle="counted at classify" />
+              <KpiCard label="Date Range" value="—" subtitle="counted at classify" />
+            {:else}
+              <KpiCard label="Branches" value={preview.branches.length.toString()} />
+              <KpiCard label="Outlets" value={preview.outletCount?.toLocaleString() ?? '—'} />
+              <KpiCard label="Date Range" value={preview.dateRange || '—'} />
+            {/if}
           </div>
 
           <!-- Column mapping -->
@@ -947,23 +1312,65 @@
             {:else}
               <div class="preview-ok">✓ All {REQUIRED_COLS.length} required columns matched — ready to classify</div>
             {/if}
+
+            {#if sheetWarning}
+              <div class="alert alert-danger" style="margin-top:10px;">⚠ {sheetWarning}</div>
+            {/if}
+
+            {#if preview.unknownCols.length > 0}
+              <div class="preview-warn">
+                ⚠ {preview.unknownCols.length} unrecognised column{preview.unknownCols.length > 1 ? 's' : ''} — ignored by the engine:
+                <span class="warn-cols">{preview.unknownCols.join(', ')}</span>
+                <div class="warn-hint">Check for a typo if one of these was meant to be a required column.</div>
+              </div>
+            {/if}
           </div>
 
-          <!-- Sample table -->
+          <!-- Browsable data table -->
           <div class="preview-section">
-            <div class="preview-section-title">Sample — first {preview.rows.length} rows</div>
+            <div class="preview-table-head">
+              <div class="preview-section-title">Uploaded data</div>
+              <input
+                class="input input-sm preview-search"
+                placeholder="Search any column…"
+                bind:value={previewSearch}
+              />
+              <div class="preview-pager">
+                <button
+                  class="btn btn-sm btn-ghost"
+                  disabled={previewPage === 0}
+                  onclick={() => (previewPage -= 1)}
+                >◀</button>
+                <span class="preview-range">
+                  {#if previewRows.length}
+                    {(previewPage * PREVIEW_PAGE_SIZE + 1).toLocaleString()}–{Math.min((previewPage + 1) * PREVIEW_PAGE_SIZE, previewRows.length).toLocaleString()}
+                    of {previewRows.length.toLocaleString()}
+                  {:else}
+                    no matches
+                  {/if}
+                </span>
+                <button
+                  class="btn btn-sm btn-ghost"
+                  disabled={previewPage >= previewPageCount - 1}
+                  onclick={() => (previewPage += 1)}
+                >▶</button>
+              </div>
+            </div>
+
             <div class="preview-table-wrap">
               <table class="preview-table">
                 <thead>
                   <tr>
+                    <th class="rownum">#</th>
                     {#each preview.headers as h}
-                      <th>{h}</th>
+                      <th class:unknown-col={preview.unknownCols.includes(h)}>{h}</th>
                     {/each}
                   </tr>
                 </thead>
                 <tbody>
-                  {#each preview.rows as row}
+                  {#each previewPageRows as row, ri}
                     <tr>
+                      <td class="rownum">{previewPage * PREVIEW_PAGE_SIZE + ri + 1}</td>
                       {#each preview.headers as _, ci}
                         <td>{row[ci] ?? ''}</td>
                       {/each}
@@ -972,7 +1379,17 @@
                 </tbody>
               </table>
             </div>
-            <div class="preview-foot">showing {preview.rows.length} of {preview.totalRows.toLocaleString()} rows</div>
+
+            <div class="preview-foot">
+              {#if previewSearch.trim()}
+                {previewRows.length.toLocaleString()} matching of {preview.parsedRows.toLocaleString()} rows
+              {:else}
+                {preview.parsedRows.toLocaleString()} rows loaded
+              {/if}
+              {#if preview.sampled}
+                · previewing the first {preview.parsedRows.toLocaleString()} — full file has ~{preview.totalRows.toLocaleString()} rows
+              {/if}
+            </div>
           </div>
 
           <!-- Branch distribution -->
@@ -1254,23 +1671,72 @@
 
   <!-- Controls row -->
   <div class="controls-row">
-    <!-- Branch filter -->
-    <div class="branch-filter">
-      <span class="label">Branch</span>
-      <select class="select" bind:value={selectedBranch}>
-        <option>All Branches</option>
-        {#each branches as branch}
-          <option>{branch}</option>
-        {/each}
-      </select>
+    <div class="filter-bar">
+      <MultiSelect label="Branch" options={branches} bind:selected={fBranch} placeholder="All branches" />
+      <MultiSelect label="Class" options={classes} bind:selected={fClass} />
+      <MultiSelect label="Lifecycle" options={lifecycles} bind:selected={fLifecycle} />
+      <MultiSelect label="Risk" options={risks} bind:selected={fRisk} />
+
+      <button
+        class="btn btn-sm btn-ghost"
+        class:btn-active={showMore || moreCount > 0}
+        onclick={() => (showMore = !showMore)}
+      >
+        More{moreCount ? ` (${moreCount})` : ''}
+      </button>
     </div>
 
     <!-- Job ID + Reset -->
     <div class="controls-right">
+      <span class="filter-count">
+        {#if activeChips.length}
+          <strong>{filteredResults.length.toLocaleString()}</strong> of {data.results.length.toLocaleString()} outlets
+        {:else}
+          {data.results.length.toLocaleString()} outlets
+        {/if}
+      </span>
       <span class="job-tag">Job: {data.job_id}</span>
       <button class="btn btn-sm" onclick={reset}>New Job</button>
     </div>
   </div>
+
+  {#if showMore}
+    <div class="more-panel">
+      <MultiSelect label="Growth signal" options={growths} bind:selected={fGrowth} />
+      <MultiSelect label="Visit priority" options={priorities} bind:selected={fPriority} />
+      <MultiSelect label="Category" options={categories} bind:selected={fCategory} />
+      <MultiSelect label="Principal" options={principals} bind:selected={fPrincipal} />
+      <MultiSelect label="Township" options={townships} bind:selected={fTownship} />
+      <MultiSelect label="Route" options={routes} bind:selected={fRoute} />
+      <label class="f-item f-range">
+        <span class="f-label">Revenue (Ks)</span>
+        <input class="input input-sm" type="number" placeholder="min" bind:value={fRevMin} />
+        <span class="f-dash">–</span>
+        <input class="input input-sm" type="number" placeholder="max" bind:value={fRevMax} />
+      </label>
+      <label class="f-item f-range">
+        <span class="f-label">Growth 6M/12M (%)</span>
+        <input class="input input-sm" type="number" placeholder="min" bind:value={fGrowthMin} />
+        <span class="f-dash">–</span>
+        <input class="input input-sm" type="number" placeholder="max" bind:value={fGrowthMax} />
+      </label>
+      <label class="f-item f-wide">
+        <span class="f-label">Outlet</span>
+        <input class="input input-sm" placeholder="Search code or name…" bind:value={fSearch} />
+      </label>
+    </div>
+  {/if}
+
+  {#if activeChips.length}
+    <div class="chip-row">
+      {#each activeChips as chip}
+        <button class="chip" onclick={chip.clear} title="Remove filter">
+          {chip.label} <span class="chip-x">✕</span>
+        </button>
+      {/each}
+      <button class="chip-reset" onclick={clearFilters}>Reset all</button>
+    </div>
+  {/if}
 
   <!-- KPI cards grid -->
   <div class="grid-kpi results-kpis">
@@ -1943,7 +2409,20 @@
 
   <!-- ---- TAB 6: EXPORT ---- -->
   {:else if activeTab === 6}
-    <ChapterHeading title="Export Results" subtitle="Download the complete classified dataset" />
+    <ChapterHeading title="Export Results" subtitle="Download the classified dataset" />
+
+    {#if activeChips.length}
+      <label class="export-scope">
+        <input type="checkbox" bind:checked={exportFiltered} />
+        <span>
+          Apply current filters —
+          <strong>{filteredResults.length.toLocaleString()}</strong> of
+          {data.results.length.toLocaleString()} outlets
+          {#if !exportFiltered}<em>(exporting everything)</em>{/if}
+        </span>
+      </label>
+    {/if}
+
     <div class="export-grid">
       <!-- Excel — full multi-sheet report -->
       <div class="card card-flush">
@@ -1963,9 +2442,18 @@
             <li>Run Comparison vs previous run</li>
             <li>Run Info — who ran it, rule version, LLM cost</li>
           </ul>
-          <button class="btn btn-block" onclick={() => exportExcel(data.job_id)}>
-            Download Excel
+          <button class="btn btn-block" disabled={exporting} onclick={downloadExcel}>
+            {exporting ? `${exportPhase === 'downloading' ? 'Downloading' : 'Building workbook'}… ${exportPct}%` : 'Download Excel'}
           </button>
+          {#if exporting}
+            <div class="export-progress">
+              <div class="export-bar"><div class="export-bar-fill" style="width:{exportPct}%"></div></div>
+              <div class="export-status">{exportMsg}</div>
+            </div>
+          {/if}
+          {#if exportError}
+            <div class="export-error">{exportError}</div>
+          {/if}
         </div>
       </div>
 
@@ -1980,7 +2468,7 @@
             every outlet, every column. For import into other tools.
           </div>
           <ul class="export-list">
-            <li>All outlets ({(data?.results?.length ?? 0).toLocaleString()} rows)</li>
+            <li>{(exportFiltered && activeChips.length ? filteredResults.length : (data?.results?.length ?? 0)).toLocaleString()} outlets{exportFiltered && activeChips.length ? ' (filtered)' : ''}</li>
             <li>Every column — classification, sales, contributions, AI</li>
             <li>No formatting / no extra sheets</li>
           </ul>
@@ -2093,21 +2581,124 @@
     flex-shrink: 0;
   }
 
-  .threshold-row {
-    margin-top: 22px;
+  .preview-loading {
     display: flex;
-    gap: 24px;
+    align-items: center;
+    gap: 10px;
+    padding: 18px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
   }
-  .threshold-field {
+  .spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .preview-table-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .preview-table-head .preview-section-title {
+    margin: 0;
     flex: 1;
   }
-  .range {
-    width: 100%;
-    cursor: pointer;
-    accent-color: var(--accent);
+  .preview-search {
+    min-width: 200px;
   }
-  .range-a { accent-color: var(--class-a); }
-  .range-b { accent-color: var(--class-b); }
+  .preview-pager {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .preview-range {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .preview-table th.unknown-col {
+    color: var(--text-faint);
+    text-decoration: line-through;
+  }
+  .preview-table .rownum {
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    width: 1%;
+    white-space: nowrap;
+  }
+  .preview-warn {
+    margin-top: 10px;
+    padding: 8px 12px;
+    font-size: 0.78rem;
+    color: var(--text);
+    background: var(--warn-bg, #FEF9C3);
+    border: 1px solid var(--warn-border, #E6D57A);
+    border-radius: var(--r-sm, 6px);
+  }
+  .warn-cols {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.74rem;
+  }
+  .warn-hint {
+    margin-top: 4px;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+  }
+
+  .active-rules {
+    margin-top: 22px;
+    padding: 12px 14px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md, 8px);
+  }
+  .ar-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .ar-title {
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .ar-link {
+    font-size: 0.75rem;
+    color: var(--accent);
+    text-decoration: none;
+  }
+  .ar-link:hover { text-decoration: underline; }
+  .ar-body {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.82rem;
+    color: var(--text);
+  }
+  .ar-item b {
+    font-weight: 600;
+  }
+  .ar-sep { color: var(--text-faint); }
+  .ar-note {
+    margin-top: 6px;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+  }
 
   .preview-kpis {
     display: grid;
@@ -2748,6 +3339,101 @@
   .branch-filter .label {
     margin: 0;
   }
+
+  /* ===== Filter bar ===== */
+  .filter-bar {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .f-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .f-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .select-sm,
+  .input-sm {
+    height: 32px;
+    padding: 0 8px;
+    font-size: 0.8rem;
+    min-width: 128px;
+  }
+  .f-range {
+    flex-direction: column;
+  }
+  .f-range .input-sm {
+    min-width: 92px;
+  }
+  .f-range {
+    display: grid;
+    grid-template-areas: "l l l" "a d b";
+    grid-template-columns: auto auto auto;
+    align-items: center;
+    gap: 4px 6px;
+  }
+  .f-range .f-label { grid-area: l; }
+  .f-dash { grid-area: d; color: var(--text-faint); }
+  .f-wide .input-sm { min-width: 220px; }
+  .btn-active {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .more-panel {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md, 8px);
+  }
+  .filter-count {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .filter-count strong { color: var(--text); }
+  .chip-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 16px;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    font-size: 0.74rem;
+    color: var(--text);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+    cursor: pointer;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--accent); }
+  .chip-x { font-size: 0.66rem; opacity: 0.6; }
+  .chip-reset {
+    padding: 3px 4px;
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .chip-reset:hover { color: var(--accent); }
   .job-tag {
     font-size: 0.72rem;
     color: var(--text-muted);
@@ -3035,6 +3721,49 @@
     margin-bottom: 12px;
     line-height: 1.5;
   }
+  .export-error {
+    font-size: 0.78rem;
+    color: var(--danger, #C0392B);
+    margin-top: 8px;
+  }
+  .export-scope {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+    padding: 10px 14px;
+    font-size: 0.8rem;
+    color: var(--text);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md, 8px);
+    cursor: pointer;
+  }
+  .export-scope em {
+    color: var(--text-muted);
+    font-style: normal;
+  }
+  .export-progress {
+    margin-top: 10px;
+  }
+  .export-bar {
+    height: 6px;
+    background: var(--border);
+    border-radius: var(--r-pill);
+    overflow: hidden;
+  }
+  .export-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: var(--r-pill);
+    transition: width 0.25s ease;
+  }
+  .export-status {
+    margin-top: 6px;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
   .export-list {
     margin: 0 0 16px;
     padding-left: 18px;
@@ -3062,6 +3791,7 @@
     .proc-grid { grid-template-columns: 1fr; }
     .pipeline-panel-grid { grid-template-columns: 1fr; }
     .how-grid, .get-grid { grid-template-columns: 1fr; }
-    .threshold-row { flex-direction: column; gap: 14px; }
+    .ar-body { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .ar-sep { display: none; }
   }
 </style>

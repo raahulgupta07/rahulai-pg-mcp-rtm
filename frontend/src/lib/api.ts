@@ -71,12 +71,9 @@ export async function classify(uploadId: string, thresholdA: number = 80, thresh
 }
 
 // Async classify — kicks off background job, returns job_id immediately
-export async function classifyAsync(uploadId: string, thresholdA: number = 80, thresholdB: number = 95): Promise<{job_id: string, status: string, status_url: string, result_url: string}> {
-  const params = new URLSearchParams({
-    upload_id: uploadId,
-    threshold_a: String(thresholdA),
-    threshold_b: String(thresholdB),
-  });
+/** Cutoffs are NOT passed — the engine always runs on the active /rules config. */
+export async function classifyAsync(uploadId: string): Promise<{job_id: string, status: string, status_url: string, result_url: string}> {
+  const params = new URLSearchParams({ upload_id: uploadId });
   return fetchJSON(`/classify-async?${params}`, { method: 'POST' });
 }
 
@@ -100,14 +97,107 @@ export async function exportExcel(jobId: string): Promise<void> {
   const res = await fetch(`${BASE}/jobs/${jobId}/export`, {
     headers: auth.getHeaders(),
   });
+  if (res.status === 401) {
+    auth.logout();
+    throw new Error('Session expired');
+  }
   if (!res.ok) throw new Error('Export failed');
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = `RTM_${jobId}.xlsx`;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  // Revoking in the same tick kills an in-flight download of a large blob.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+export interface ExportProgress {
+  phase: 'building' | 'downloading';
+  percent: number;
+  message: string;
+  loaded?: number;
+  total?: number;
+}
+
+/**
+ * Build the workbook server-side (polling for real % as each sheet lands), then
+ * stream it down with byte-level progress. Reports both phases via onProgress.
+ */
+export async function exportExcelWithProgress(
+  jobId: string,
+  onProgress: (p: ExportProgress) => void,
+  cusCodes?: string[] | null,
+): Promise<void> {
+  const { export_id } = await fetchJSON<{ export_id: string }>(
+    `/jobs/${jobId}/export-async`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cusCodes?.length ? { cus_codes: cusCodes } : {}),
+    },
+  );
+
+  // Phase 1 — server builds the workbook
+  for (;;) {
+    const st = await fetchJSON<any>(`/exports/${export_id}/status`);
+    if (st.status === 'failed') throw new Error(st.error || 'Export failed');
+    onProgress({ phase: 'building', percent: st.percent, message: st.message });
+    if (st.ready) break;
+    await new Promise(r => setTimeout(r, 700));
+  }
+
+  // Phase 2 — stream it down with a real Content-Length
+  const res = await fetch(`${BASE}/exports/${export_id}/download`, { headers: auth.getHeaders() });
+  if (res.status === 401) { auth.logout(); throw new Error('Session expired'); }
+  if (!res.ok) throw new Error('Download failed');
+
+  const total = Number(res.headers.get('content-length')) || 0;
+  const reader = res.body?.getReader();
+  let blob: Blob;
+
+  if (reader && total) {
+    const chunks: Uint8Array[] = [];
+    let loaded = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loaded += value.length;
+      onProgress({
+        phase: 'downloading',
+        percent: Math.round((loaded / total) * 100),
+        message: 'Downloading',
+        loaded, total,
+      });
+    }
+    blob = new Blob(chunks as BlobPart[], { type: res.headers.get('content-type') || '' });
+  } else {
+    blob = await res.blob();
+  }
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `RTM_${jobId}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+export async function getRuleConfig(): Promise<any> {
+  return fetchJSON('/rule-config');
+}
+
+/** Server-side preview of a staged upload — used when the browser can't parse the file. */
+export async function getUploadPreview(uploadId: string, rows = 200): Promise<{
+  headers: string[]; rows: string[][]; total_rows: number; parsed_rows: number;
+  sheet_names: string[]; filename: string;
+}> {
+  return fetchJSON(`/uploads/${uploadId}/preview?rows=${rows}`);
 }
 
 export async function getHealth(): Promise<HealthResponse> {
